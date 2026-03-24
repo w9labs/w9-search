@@ -29,16 +29,28 @@ services:
     restart: always
     networks:
       - w9-network
-    ports:
-      - "${SEARXNG_PORT:-8080}:8080"
+      - traefik
+    expose:
+      - "8080"
     volumes:
       - ./searxng:/etc/searxng:rw
     environment:
-      - BASE_URL=http://localhost:8080/
+      - BASE_URL=${SEARXNG_BASE_URL:-https://search.example.com/}
       - INSTANCE_NAME=w9-searxng
       - SEARXNG_SECRET=${SEARXNG_SECRET}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik"
+      - "traefik.http.routers.searxng.entrypoints=websecure"
+      - "traefik.http.routers.searxng.tls=true"
+      # Supports multiple domains via Traefik rule, e.g.
+      # SEARXNG_TRAEFIK_RULE=Host(`search.example.com`) || Host(`search2.example.com`)
+      - "traefik.http.routers.searxng.rule=${SEARXNG_TRAEFIK_RULE:-Host(`search.example.com`)}"
+      - "traefik.http.services.searxng.loadbalancer.server.port=8080"
 
 networks:
   w9-network:
     name: w9-network
     driver: bridge
+  traefik:
+    external: true
