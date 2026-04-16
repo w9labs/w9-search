@@ -9,17 +9,8 @@ RUN apt-get update && apt-get install -y \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy manifests first (for better caching)
+# Copy manifests and source
 COPY Cargo.toml ./
-
-# Create a dummy src to build dependencies
-RUN mkdir src && echo "fn main() {}" > src/main.rs
-
-# Build dependencies (this layer will be cached)
-# Note: We don't copy Cargo.lock to avoid version conflicts
-RUN cargo build --release && rm src/main.rs
-
-# Copy source code
 COPY src ./src
 
 # Build the actual application

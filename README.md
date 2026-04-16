@@ -40,6 +40,7 @@ cargo run
 ```
 
 5. Open your browser to `http://localhost:3000`
+   Production: `https://search.w9.nu`
 
 ## Usage
 
