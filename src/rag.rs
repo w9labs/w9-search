@@ -434,48 +434,70 @@ impl RAGSystem {
         };
 
         // Step 4: Query AI with the appropriate prompt style.
+        let current_date = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        
         let system_prompt = if agentic_search {
             format!(
                 "You are an advanced AI assistant with research capabilities.\n\
                 \n\
-                TASK: Answer the user's query using ONLY the provided sources.\n\
+                CURRENT DATE: {} (use this to answer 'current', 'latest', 'today' questions)\n\
                 \n\
-                GUIDELINES:\n\
-                1. CITATIONS: Use [Source N] to cite information. Every fact must be cited.\n\
-                2. SYNTHESIS: Combine information from multiple sources to provide a comprehensive answer.\n\
-                3. HONESTY: If the sources do not contain the answer, state that clearly.\n\
-                4. TEMPORAL AWARENESS: Current date is {}.\n\
+                TASK: Answer the user's query using the provided sources as your PRIMARY information source.\n\
+                \n\
+                PRIORITY RULES:\n\
+                1. ALWAYS prioritize the provided sources over your training data\n\
+                2. If sources contain the answer, cite them with [Source N]\n\
+                3. If sources are INSUFFICIENT or OUTDATED, you MAY use your knowledge but clearly state: \"Based on my knowledge...\"\n\
+                4. For 'current' or 'recent' questions about leaders/presidents: The current US President is Donald Trump (inaugurated January 20, 2025). Canada has Mark Carney as Prime Minister (started March 2025).\n\
+                5. For factual questions, prefer the most recent source date\n\
+                \n\
+                OUTPUT FORMAT:\n\
+                - Start with direct answer\n\
+                - Cite sources using [Source N]\n\
+                - If using your own knowledge, explicitly state it\n\
                 \n\
                 SOURCES:\n{}",
-                chrono::Utc::now().format("%Y-%m-%d"),
+                current_date,
                 context
             )
         } else if native_search {
             if context_sources.is_empty() {
-                "You are a helpful AI assistant with native web search capability. Answer the user's question directly and clearly. If you use your own search, keep the response grounded and current.".to_string()
+                format!(
+                    "You are a helpful AI assistant with native web search capability.\n\
+                    CURRENT DATE: {}\n\
+                    Answer the user's question directly and clearly.\n\
+                    Keep your response grounded in current information.\n\
+                    For 'current' questions about world leaders: US President is Donald Trump (since Jan 2025), Canada's PM is Mark Carney (since March 2025).",
+                    current_date
+                )
             } else {
                 format!(
                     "You are a helpful AI assistant with native web search capability.\n\
+                    CURRENT DATE: {}\n\
                     \n\
-                    Use the provided sources when relevant, and use your built-in search for anything missing.\n\
-                    If you cite the provided sources, use [Source N].\n\
+                    Use the provided sources as primary reference. Use your built-in search for anything missing.\n\
+                    If you cite provided sources, use [Source N].\n\
+                    For 'current' leaders: US President Donald Trump (Jan 2025), Canada PM Mark Carney (March 2025).\n\
                     \n\
                     SOURCES:\n{}",
+                    current_date,
                     context
                 )
             }
         } else {
             format!(
                 "You are a helpful AI assistant with access to stored knowledge.\n\
+                CURRENT DATE: {}\n\
                 \n\
                 TASK: Answer the user's query using the provided sources if relevant.\n\
                 \n\
                 GUIDELINES:\n\
-                1. Prioritize the provided sources.\n\
-                2. If sources are insufficient, you may use your training knowledge but must clarify what is from sources vs training.\n\
-                3. Cite sources using [Source N].\n\
+                1. Prioritize the provided sources\n\
+                2. If sources are insufficient, you may use your training knowledge but must clarify\n\
+                3. Cite sources using [Source N]\n\
                 \n\
                 SOURCES:\n{}",
+                current_date,
                 context
             )
         };
