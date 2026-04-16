@@ -65,7 +65,14 @@ fn focus_text_for_extraction(text: &str, terms: &[String], max_chars: usize) -> 
         return normalized;
     }
 
-    let splitter = Regex::new(r"(?<=[.!?。；;\n])\s+").unwrap();
+    // Use simple ASCII-based split to avoid unicode regex issues
+    let splitter = match Regex::new(r"[.!?]\s+") {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("Regex error: {}, falling back to simple split", e);
+            return normalized.chars().take(max_chars).collect();
+        }
+    };
     let mut scored = Vec::new();
 
     for sentence in splitter.split(&normalized) {
