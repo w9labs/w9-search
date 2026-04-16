@@ -50,19 +50,73 @@ impl RAGSystem {
         }
     }
 
-    /// Ask the LLM to plan the research steps
+    /// Ask the LLM to plan the research steps with enhanced intelligence
     async fn plan_search(&self, query: &str, reasoning_enabled: bool) -> Result<Vec<String>> {
         tracing::info!("Planning search for query: {}", query);
 
+        let current_date = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let _current_year = chrono::Utc::now().format("%Y").to_string();
+
+        // Detect query type for smarter planning
+        let query_lower = query.to_lowercase();
+        
+        // Analyze query intent
+        let is_comparative = query_lower.contains("compare") 
+            || query_lower.contains("difference") 
+            || query_lower.contains("versus")
+            || query_lower.contains("vs ");
+        let is_factual = query_lower.contains("what is") 
+            || query_lower.contains("who is") 
+            || query_lower.contains("where is")
+            || query_lower.contains("when did");
+        let is_howto = query_lower.contains("how to") 
+            || query_lower.contains("how do")
+            || query_lower.contains("guide");
+        let is_news = query_lower.contains("news") 
+            || query_lower.contains("latest")
+            || query_lower.contains("recently")
+            || query_lower.contains("breaking");
+        let is_buy = query_lower.contains("buy") 
+            || query_lower.contains("price")
+            || query_lower.contains("cost")
+            || query_lower.contains("cheap");
+
         let system_prompt = if reasoning_enabled {
-            "You are a thorough research planner. Given a user query, generate 2-5 complementary search queries that would help answer it well. \
-            Include direct factual queries, recent-context queries, and one query that checks for counterexamples or edge cases when useful. \
-            Return ONLY a JSON object with a 'queries' key containing the list of strings. \
-            Example: {\"queries\": [\"current president of US\", \"US president term length\"]}"
+            // Enhanced reasoning for complex queries
+            format!(
+                "You are an expert research planner with deep understanding of information retrieval. Given a user query, generate 2-5 complementary search queries that would comprehensively answer it.\n\
+                \n\
+                Current date: {} (use this to understand 'current', 'recent', 'latest' queries)\n\
+                \n\
+                Query Analysis:\n\
+                - Is comparative: {}\n\
+                - Is factual: {}\n\
+                - Is how-to: {}\n\
+                - Is news-related: {}\n\
+                - Is buying/research: {}\n\
+                \n\
+                Guidelines:\n\
+                1. For comparative queries: Search BOTH sides and include comparison terms\n\
+                2. For factual queries: Include exact terms and alternative phrasings\n\
+                3. For news: Include date ranges and 'latest' terms\n\
+                4. For how-to: Include step-by-step and tutorial terms\n\
+                5. Always check for recent updates when information may change\n\
+                6. Include one counterexample check when relevant\n\
+                \n\
+                Return ONLY a JSON object with a 'queries' key containing the list of strings.\n\
+                Example: {{\"queries\": [\"current president of US 2024\", \"US president term length election\"]}}",
+                current_date, is_comparative, is_factual, is_howto, is_news, is_buy
+            )
         } else {
-            "You are a simplified research planner. Given a user query, generate a list of 1-3 specific search queries that would help answer it. \
-            Return ONLY a JSON object with a 'queries' key containing the list of strings. \
-            Example: {\"queries\": [\"current president of US\", \"US president term length\"]}"
+            // Simplified for faster queries
+            format!(
+                "You are a research planner. Given a user query, generate 1-3 specific search queries that would help answer it.\n\
+                Current date: {}\n\
+                Include date/context terms for time-sensitive queries.\n\
+                Return ONLY a JSON object with a 'queries' key.\n\
+                Example: {{\"queries\": [\"current president of US\"]}}",
+                current_date
+            )
         };
 
         let messages = vec![
@@ -85,6 +139,10 @@ impl RAGSystem {
             .as_str()
             .unwrap_or("{}");
 
+        // Also check for reasoning_content (Pollinations AI)
+        let reasoning = json_resp["choices"][0]["message"]["reasoning_content"]
+            .as_str();
+
         // Clean markdown code blocks if present
         let clean_content = content
             .trim()
@@ -103,12 +161,30 @@ impl RAGSystem {
             }
         }
 
-        // Fallback: just use the original query
-        Ok(vec![query.to_string()])
+        // Fallback: try reasoning content if main content failed
+        if let Some(reasoning_str) = reasoning {
+            if let Ok(plan) = serde_json::from_str::<Value>(reasoning_str) {
+                if let Some(queries) = plan["queries"].as_array() {
+                    let strings: Vec<String> = queries
+                        .iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect();
+                    if !strings.is_empty() {
+                        tracing::info!("Generated search plan from reasoning: {:?}", strings);
+                        return Ok(strings);
+                    }
+                }
+            }
+        }
+
+        // Fallback: just use the original query with date context
+        Ok(vec![Self::enhance_query_with_temporal_context(query)])
     }
 
     /// Enhance search query with temporal context for time-sensitive queries
     fn enhance_query_with_temporal_context(query: &str) -> String {
+        let _current_date = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let _current_year = chrono::Utc::now().format("%Y").to_string();
         let query_lower = query.to_lowercase();
 
         // Check if query is time-sensitive
@@ -458,6 +534,18 @@ impl RAGSystem {
                 serde_json::to_string_pretty(&response_json).unwrap_or_default()
             );
 
+            // Check for error in response
+            if let Some(error) = response_json.get("error") {
+                tracing::error!(
+                    "Provider API error: {}",
+                    serde_json::to_string(error).unwrap_or_default()
+                );
+                return Err(anyhow::anyhow!(
+                    "Provider API error: {}",
+                    serde_json::to_string(error).unwrap_or_default()
+                ));
+            }
+
             if let Some(choices) = response_json.get("choices").and_then(|c| c.as_array()) {
                 if choices.is_empty() {
                     tracing::warn!("Provider returned empty choices array");
@@ -467,6 +555,20 @@ impl RAGSystem {
 
                 if let Some(choice) = choices.first() {
                     if let Some(message) = choice.get("message") {
+                        // Check for reasoning content (Pollinations AI)
+                        let reasoning_content = message
+                            .get("reasoning_content")
+                            .and_then(|rc| rc.as_str());
+
+                        if let Some(reasoning) = reasoning_content {
+                            tracing::info!(
+                                "Received reasoning from AI (length: {} chars): {}...",
+                                reasoning.len(),
+                                &reasoning[..reasoning.len().min(200)]
+                            );
+                            // Don't break here - reasoning is just thinking, we still need final answer
+                        }
+
                         // Check if there's content (final answer)
                         if let Some(content) = message.get("content").and_then(|c| c.as_str()) {
                             if !content.is_empty() {
@@ -476,6 +578,20 @@ impl RAGSystem {
                                 );
                                 final_answer = content.to_string();
                                 break;
+                            }
+                        }
+
+                        // If content is empty but we have reasoning, use reasoning as answer
+                        if final_answer.is_empty() {
+                            if let Some(reasoning) = reasoning_content {
+                                if !reasoning.is_empty() {
+                                    tracing::info!(
+                                        "Using reasoning as final answer (length: {} chars)",
+                                        reasoning.len()
+                                    );
+                                    final_answer = reasoning.to_string();
+                                    break;
+                                }
                             }
                         }
 
@@ -583,6 +699,13 @@ impl RAGSystem {
                                         break;
                                     }
                                 }
+                                // Also try reasoning_content
+                                if let Some(reasoning) = reasoning_content {
+                                    if !reasoning.is_empty() {
+                                        final_answer = reasoning.to_string();
+                                        break;
+                                    }
+                                }
                             }
                         }
                     } else {
@@ -591,16 +714,6 @@ impl RAGSystem {
                 }
             } else {
                 tracing::warn!("Provider response missing choices field");
-                if let Some(error) = response_json.get("error") {
-                    tracing::error!(
-                        "Provider API error: {}",
-                        serde_json::to_string(error).unwrap_or_default()
-                    );
-                    return Err(anyhow::anyhow!(
-                        "Provider API error: {}",
-                        serde_json::to_string(error).unwrap_or_default()
-                    ));
-                }
             }
 
             max_iterations -= 1;
