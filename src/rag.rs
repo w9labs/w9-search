@@ -646,26 +646,38 @@ impl RAGSystem {
 
                 if let Some(choice) = choices.first() {
                     if let Some(message) = choice.get("message") {
-                        // Check for all possible content fields in Pollinations AI response
-                        // Priority: content > reasoning > reasoning_content > (empty)
-                        let content_field = message.get("content").and_then(|c| c.as_str());
+                        // Extract content from message with proper priority handling
+                        // Priority: content field > text field > reasoning > reasoning_content
+                        let content_field = message.get("content").and_then(|c| {
+                            // Handle case where content might be an object with "text" field
+                            if let Some(text) = c.get("text").and_then(|t| t.as_str()) {
+                                Some(text)
+                            } else {
+                                c.as_str()
+                            }
+                        });
+                        
+                        // Also check for top-level "text" field in message
+                        let text_field = message.get("text").and_then(|t| t.as_str());
+                        
+                        // Reasoning fields (for Pollinations AI with reasoning enabled)
                         let reasoning_field = message.get("reasoning").and_then(|r| r.as_str());
                         let reasoning_content_field = message.get("reasoning_content").and_then(|rc| rc.as_str());
                         
-                        // Also check if it's nested in a "text" field (some API responses)
-                        let nested_content = message.get("text").and_then(|t| t.as_str());
-                        
-                        // Extract the best available content
+                        // Extract the best available content in priority order
                         let extracted_content = content_field
-                            .or(nested_content)
+                            .or(text_field)
                             .or(reasoning_field)
                             .or(reasoning_content_field);
                         
+                        // Log reasoning if present
                         if let Some(reasoning) = reasoning_field.or(reasoning_content_field) {
-                            tracing::info!(
-                                "Received reasoning from AI (length: {} chars)",
-                                reasoning.len()
-                            );
+                            if !reasoning.is_empty() {
+                                tracing::info!(
+                                    "Received reasoning from AI (length: {} chars)",
+                                    reasoning.len()
+                                );
+                            }
                         }
 
                         // Check if there's actual content
