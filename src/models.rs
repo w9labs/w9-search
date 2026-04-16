@@ -38,6 +38,12 @@ pub struct ProviderMetrics {
     pub limit_month: Option<i64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct ProviderStatus {
+    pub provider: String,
+    pub enabled: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryResponse {
     pub answer: String,

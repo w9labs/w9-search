@@ -1,22 +1,25 @@
-use axum::{extract::State, response::Html};
+use axum::{
+    extract::{Form, Path, State},
+    http::HeaderMap,
+    response::{Html, IntoResponse, Redirect, Response},
+};
 use maud::{html, Markup, DOCTYPE};
-use crate::AppState;
+use serde::Deserialize;
+use std::collections::HashMap;
+use tracing;
 
-pub async fn models(State(state): State<AppState>) -> Html<String> {
-    // Fetch models and limits
-    let mut models = state.llm_manager.get_models().await;
-    
-    // Sort models by provider, then name
-    models.sort_by(|a, b| {
-        let provider_cmp = a.provider.as_str().cmp(b.provider.as_str());
-        if provider_cmp == std::cmp::Ordering::Equal {
-            a.name.cmp(&b.name)
-        } else {
-            provider_cmp
-        }
-    });
+use crate::{auth, llm::ProviderType, AppState};
 
-    let metrics = state.db.get_all_provider_metrics().await.unwrap_or_default();
+pub async fn models(headers: HeaderMap, State(state): State<AppState>) -> Response {
+    let Some(session) = auth::require_session(&headers) else {
+        return Redirect::to("/login").into_response();
+    };
+
+    let metrics = state
+        .db
+        .get_all_provider_metrics()
+        .await
+        .unwrap_or_default();
 
     let markup: Markup = html! {
         (DOCTYPE)
@@ -24,7 +27,8 @@ pub async fn models(State(state): State<AppState>) -> Html<String> {
             head {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
-                title { "W9 Search - Models & Limits" }
+                title { "W9 Search - Auto Routing" }
+                link rel="icon" href="/static/favicon.svg" type="image/svg+xml";
                 link rel="stylesheet" href="/static/style.css";
                 link rel="preconnect" href="https://fonts.googleapis.com";
                 link rel="preconnect" href="https://fonts.gstatic.com" crossorigin;
@@ -33,10 +37,15 @@ pub async fn models(State(state): State<AppState>) -> Html<String> {
             body {
                 div class="container" {
                     header {
+                        img class="brand-banner" src="/static/w9-search-banner.svg" alt="W9 Search";
                         h1 { "W9 Search" }
-                        p class="subtitle" { "Models & Limits" }
+                        p class="subtitle" { "Auto Routing & Limits" }
                         nav {
                             a href="/" class="nav-link" { "← Back to Search" }
+                            @if session.role == "admin" {
+                                a href="/admin" class="nav-link" { "Admin Panel" }
+                            }
+                            a href="/logout" class="nav-link" { "Logout" }
                         }
                     }
 
@@ -46,7 +55,7 @@ pub async fn models(State(state): State<AppState>) -> Html<String> {
                             @for metric in &metrics {
                                 div class="metric-card" {
                                     div class="metric-title" { (metric.provider) }
-                                    
+
                                     // Daily Requests
                                     div class="metric-row" {
                                         span class="metric-name" { "Daily Requests Left" }
@@ -84,7 +93,7 @@ pub async fn models(State(state): State<AppState>) -> Html<String> {
                                         @let (used, limit, pct) = match (metric.req_min, metric.limit_min) {
                                             (Some(u), Some(l)) if l > 0 => (u, l, ((l as f64 - u as f64) / l as f64 * 100.0).max(0.0)),
                                             (Some(u), Some(_)) => (u, 0, 0.0),
-                                            (Some(u), None) => (u, 0, 100.0), 
+                                            (Some(u), None) => (u, 0, 100.0),
                                             (None, Some(l)) => (0, l, 100.0),
                                             (None, None) => (0, 0, 100.0),
                                         };
@@ -112,52 +121,30 @@ pub async fn models(State(state): State<AppState>) -> Html<String> {
                             }
                         }
                     }
-                    
+
                     div class="section" {
-                        h2 { "Available Models" }
-                        div class="grid-container" {
-                            @for model in &models {
-                                div class="card" {
-                                    div class="card-header" {
-                                        span class="provider-badge" { (model.provider) }
-                                        h3 { (model.name) }
-                                    }
-                                    div class="card-body" {
-                                        div class="meta-item" {
-                                            span class="label" { "ID:" }
-                                            code { (model.id) }
-                                        }
-                                        div class="meta-item" {
-                                            span class="label" { "Context:" }
-                                            span { (model.context_length.map(|c| c.to_string()).unwrap_or("Unknown".to_string())) }
-                                        }
-                                        div class="meta-item" {
-                                            span class="label" { "Access:" }
-                                            span class=(if model.is_free { "tag-free" } else { "tag-paid" }) {
-                                                (if model.is_free { "Free" } else { "Paid" })
-                                            }
-                                        }
-                                        @if let Some(description) = &model.description {
-                                            div class="meta-item model-description" {
-                                                span class="label" { "About:" }
-                                                span { (description) }
-                                            }
-                                        }
-                                        div class="model-badges" {
-                                            @if model.supports_native_search {
-                                                span class="badge badge--ok" { "Search" }
-                                            }
-                                            @if model.supports_reasoning {
-                                                span class="badge badge--warn" { "Reasoning" }
-                                            }
-                                            @if model.supports_tools {
-                                                span class="badge badge--warn" { "Tools" }
-                                            }
-                                            @if model.is_specialized {
-                                                span class="badge badge--err" { "Specialized" }
-                                            }
-                                        }
-                                    }
+                        h2 { "Auto (Smart)" }
+                        div class="card" {
+                            div class="card-header" {
+                                span class="provider-badge" { "Auto" }
+                                h3 { "Smart selection only" }
+                            }
+                            div class="card-body" {
+                                div class="meta-item" {
+                                    span class="label" { "Signed in as:" }
+                                    span { (session.email) }
+                                }
+                                div class="meta-item" {
+                                    span class="label" { "Mode:" }
+                                    span { "Manual model selection is disabled" }
+                                }
+                                p class="text-muted" {
+                                    "W9 Search now chooses the best provider automatically from the approved Pollinations set and the configured search backends."
+                                }
+                                div class="model-badges" {
+                                    span class="badge badge--ok" { "Auto route" }
+                                    span class="badge badge--warn" { "Native search aware" }
+                                    span class="badge badge--warn" { "Reasoning aware" }
                                 }
                             }
                         }
@@ -166,22 +153,13 @@ pub async fn models(State(state): State<AppState>) -> Html<String> {
             }
         }
     };
-    Html(markup.into_string())
+    Html(markup.into_string()).into_response()
 }
 
-pub async fn index(State(state): State<AppState>) -> Html<String> {
-    // Fetch models dynamically from LLMManager
-    let mut models = state.llm_manager.get_models().await;
-    
-    // Sort models by provider, then name
-    models.sort_by(|a, b| {
-        let provider_cmp = a.provider.as_str().cmp(b.provider.as_str());
-        if provider_cmp == std::cmp::Ordering::Equal {
-            a.name.cmp(&b.name)
-        } else {
-            provider_cmp
-        }
-    });
+pub async fn index(headers: HeaderMap) -> Response {
+    let Some(session) = auth::require_session(&headers) else {
+        return Redirect::to("/login").into_response();
+    };
 
     let markup: Markup = html! {
         (DOCTYPE)
@@ -190,6 +168,7 @@ pub async fn index(State(state): State<AppState>) -> Html<String> {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 title { "W9 Search" }
+                link rel="icon" href="/static/favicon.svg" type="image/svg+xml";
                 script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js" {}
                 script src="https://cdn.jsdelivr.net/npm/mermaid@10.6.1/dist/mermaid.min.js" {}
                 link rel="stylesheet" href="/static/style.css";
@@ -201,16 +180,26 @@ pub async fn index(State(state): State<AppState>) -> Html<String> {
                 // Sidebar
                 aside class="app-sidebar" {
                     div class="sidebar-header" {
-                        div class="logo" { "W9 SEARCH" }
+                        div class="brand-shell" {
+                            img class="brand-mark" src="/static/w9-search-mark.svg" alt="W9 Search";
+                            div class="logo" { "W9 SEARCH" }
+                            div class="provider-badge" { (session.email) }
+                        }
                         button id="new-chat-btn" class="new-chat-btn" title="New Chat" { "+" }
                     }
                     div id="thread-list" class="thread-list" {
                         // Threads will be injected here
                     }
-                    div class="sidebar-footer" {
-                        a href="/models" class="nav-link" { "Models & Limits" }
+                        div class="sidebar-footer" {
+                            div style="display:flex; flex-direction:column; gap:0.35rem;" {
+                                a href="/models" class="nav-link" { "Auto Routing & Limits" }
+                                @if session.role == "admin" {
+                                    a href="/admin" class="nav-link" { "Admin Panel" }
+                                }
+                                a href="/logout" class="nav-link" { "Logout" }
+                            }
+                        }
                     }
-                }
 
                 // Main Content
                 main class="app-main" {
@@ -240,22 +229,10 @@ pub async fn index(State(state): State<AppState>) -> Html<String> {
                                 }
                             }
                             div class="control-group" {
-                                select id="model-select" {
-                                    option value="auto" { "Auto (Smart)" }
-                                    @for model in &models {
-                                        option value=(model.id) {
-                                            (format!(
-                                                "{} ({}){}{}{}{}",
-                                                model.name,
-                                                model.provider,
-                                                if model.supports_native_search { " [search]" } else { "" },
-                                                if model.supports_reasoning { " [reasoning]" } else { "" },
-                                                if model.supports_tools { " [tools]" } else { "" },
-                                                if model.is_specialized { " [safety]" } else { "" }
-                                            ))
-                                        }
-                                    }
-                                }
+                                div class="provider-badge" { "Auto (Smart)" }
+                                input type="hidden" id="model-select" value="auto" {}
+                            }
+                            div class="control-group" {
                                 select id="provider-select" {
                                     option value="auto" { "Auto Engine" }
                                     option value="searxng" { "SearXNG" }
@@ -266,7 +243,7 @@ pub async fn index(State(state): State<AppState>) -> Html<String> {
                             }
                         }
                         p class="search-note" {
-                            "Native-search models skip local web search. The reasoning toggle expands the planner for models that need it."
+                            "Auto mode picks the smartest allowed model for each query. Native-search models skip local web search, and reasoning expands the planner when available."
                         }
                         div class="input-container" {
                             textarea id="user-input" placeholder="Type your follow-up question..." rows="1" {}
@@ -291,6 +268,10 @@ pub async fn index(State(state): State<AppState>) -> Html<String> {
                     async function loadThreads() {
                         try {
                             const res = await fetch('/api/threads');
+                            if (res.status === 401) {
+                                window.location.href = '/login';
+                                return;
+                            }
                             const threads = await res.json();
                             const list = document.getElementById('thread-list');
                             list.innerHTML = '';
@@ -329,6 +310,10 @@ pub async fn index(State(state): State<AppState>) -> Html<String> {
 
                         try {
                             const res = await fetch(`/api/threads/${id}/messages`);
+                            if (res.status === 401) {
+                                window.location.href = '/login';
+                                return;
+                            }
                             const messages = await res.json();
                             container.innerHTML = '';
                             
@@ -424,11 +409,16 @@ pub async fn index(State(state): State<AppState>) -> Html<String> {
                                     query,
                                     web_search_enabled: document.getElementById('web-search-toggle').checked,
                                     search_reasoning_enabled: document.getElementById('search-reasoning-toggle').checked,
-                                    model: document.getElementById('model-select').value,
+                                    model: 'auto',
                                     search_provider: document.getElementById('provider-select').value,
                                     thread_id: currentThreadId 
                                 })
                             });
+
+                            if (res.status === 401) {
+                                window.location.href = '/login';
+                                return;
+                            }
 
                             const reader = res.body.getReader();
                             const decoder = new TextDecoder();
@@ -561,5 +551,178 @@ pub async fn index(State(state): State<AppState>) -> Html<String> {
             }
         }
     };
-    Html(markup.into_string())
+    Html(markup.into_string()).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ProviderToggleForm {
+    pub enabled: bool,
+}
+
+pub async fn admin(headers: HeaderMap, State(state): State<AppState>) -> Response {
+    let Some(session) = auth::require_admin(&headers) else {
+        return Redirect::to("/login").into_response();
+    };
+
+    let statuses = state.db.get_provider_settings().await.unwrap_or_default();
+    let metrics = state
+        .db
+        .get_all_provider_metrics()
+        .await
+        .unwrap_or_default();
+    let models = state.llm_manager.get_models().await;
+
+    let mut model_counts: HashMap<String, usize> = HashMap::new();
+    for model in &models {
+        *model_counts
+            .entry(model.provider.as_str().to_string())
+            .or_insert(0) += 1;
+    }
+
+    let markup: Markup = html! {
+        (DOCTYPE)
+        html lang="en" {
+            head {
+                meta charset="utf-8";
+                meta name="viewport" content="width=device-width, initial-scale=1";
+                title { "W9 Search - Admin" }
+                link rel="icon" href="/static/favicon.svg" type="image/svg+xml";
+                link rel="stylesheet" href="/static/style.css";
+                link rel="preconnect" href="https://fonts.googleapis.com";
+                link rel="preconnect" href="https://fonts.gstatic.com" crossorigin;
+                link href=(r#"https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap"#) rel="stylesheet";
+            }
+            body {
+                div class="container" {
+                    header {
+                        img class="brand-banner" src="/static/w9-search-banner.svg" alt="W9 Search";
+                        h1 { "Admin Control Panel" }
+                        p class="subtitle" { "Enable or disable providers, then refresh the model cache." }
+                        nav {
+                            a href="/" class="nav-link" { "← Back to Search" }
+                            a href="/models" class="nav-link" { "Auto Routing" }
+                            a href="/logout" class="nav-link" { "Logout" }
+                        }
+                    }
+
+                    div class="section" {
+                        h2 { "Provider Switches" }
+                        div class="grid-container" {
+                            @for status in &statuses {
+                                @let provider_name = ProviderType::from_str(&status.provider)
+                                    .map(|p| p.to_string())
+                                    .unwrap_or_else(|| status.provider.clone());
+                                @let model_count = model_counts.get(&status.provider).copied().unwrap_or(0);
+                                div class="card" {
+                                    div class="card-header" {
+                                        span class="provider-badge" { (provider_name.clone()) }
+                                        @if status.enabled {
+                                            span class="badge badge--ok" { "Enabled" }
+                                        } @else {
+                                            span class="badge badge--err" { "Disabled" }
+                                        }
+                                    }
+                                    div class="card-body" {
+                                        div class="meta-item" {
+                                            span class="label" { "Loaded models" }
+                                            span { (model_count) }
+                                        }
+                                        div class="meta-item" {
+                                            span class="label" { "Status" }
+                                            @if status.enabled {
+                                                span { "Available for auto routing" }
+                                            } @else {
+                                                span { "Filtered out of routing" }
+                                            }
+                                        }
+                                        form method="POST" action=(format!("/admin/providers/{}", status.provider)) {
+                                            input type="hidden" name="enabled" value=(if status.enabled { "false" } else { "true" });
+                                            @if status.enabled {
+                                                button type="submit" class="btn" { "Disable" }
+                                            } @else {
+                                                button type="submit" class="btn" { "Enable" }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    div class="section" {
+                        h2 { "Current Metrics" }
+                        div class="grid-container" {
+                            @for metric in &metrics {
+                                div class="metric-card" {
+                                    div class="metric-title" { (metric.provider) }
+                                    div class="metric-row" {
+                                        span class="metric-name" { "Minute requests" }
+                                        span { (metric.req_min.unwrap_or(0)) }
+                                    }
+                                    div class="metric-row" {
+                                        span class="metric-name" { "Daily requests" }
+                                        span { (metric.req_day.unwrap_or(0)) }
+                                    }
+                                    div class="metric-row" {
+                                        span class="metric-name" { "Monthly requests" }
+                                        span { (metric.req_month.unwrap_or(0)) }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    div class="section" {
+                        h2 { "Live Context" }
+                        div class="card" {
+                            div class="meta-item" {
+                                span class="label" { "Signed in as" }
+                                span { (session.email) }
+                            }
+                            div class="meta-item" {
+                                span class="label" { "Role" }
+                                span { (session.role) }
+                            }
+                            p class="text-muted" {
+                                "Provider changes take effect after the cache refresh runs, which is triggered automatically after each toggle."
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    };
+
+    Html(markup.into_string()).into_response()
+}
+
+pub async fn toggle_provider(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+    Path(provider): Path<String>,
+    Form(form): Form<ProviderToggleForm>,
+) -> Response {
+    let Some(_) = auth::require_admin(&headers) else {
+        return Redirect::to("/login").into_response();
+    };
+
+    let provider_key = provider.to_lowercase();
+    if ProviderType::from_str(&provider_key).is_none() {
+        return Redirect::to("/admin").into_response();
+    }
+
+    if let Err(e) = state
+        .db
+        .set_provider_enabled(&provider_key, form.enabled)
+        .await
+    {
+        tracing::error!("Failed to update provider {}: {}", provider_key, e);
+        return Redirect::to("/admin").into_response();
+    }
+
+    if let Err(e) = state.llm_manager.fetch_available_models().await {
+        tracing::warn!("Provider toggle refresh failed: {}", e);
+    }
+
+    Redirect::to("/admin").into_response()
 }

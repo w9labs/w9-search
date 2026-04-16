@@ -1,5 +1,5 @@
 use anyhow::Result;
-use chrono::{DateTime, Utc, FixedOffset};
+use chrono::{DateTime, FixedOffset, Utc};
 use serde_json::{json, Value};
 
 pub struct Tools;
@@ -346,8 +346,12 @@ impl Tools {
     }
 
     pub fn execute_tool(name: &str, arguments: &Value) -> Result<String> {
-        tracing::info!("Executing tool: {} with arguments: {}", name, serde_json::to_string(arguments).unwrap_or_default());
-        
+        tracing::info!(
+            "Executing tool: {} with arguments: {}",
+            name,
+            serde_json::to_string(arguments).unwrap_or_default()
+        );
+
         let result = match name {
             "get_current_date" => Self::get_current_date(arguments),
             "get_current_time" => Self::get_current_time(arguments),
@@ -368,33 +372,39 @@ impl Tools {
             _ => {
                 tracing::error!("Unknown tool requested: {}", name);
                 Err(anyhow::anyhow!("Unknown tool: {}", name))
-            },
+            }
         };
-        
+
         match &result {
-            Ok(res) => tracing::info!("Tool {} executed successfully, result length: {}", name, res.len()),
+            Ok(res) => tracing::info!(
+                "Tool {} executed successfully, result length: {}",
+                name,
+                res.len()
+            ),
             Err(e) => tracing::error!("Tool {} execution failed: {}", name, e),
         }
-        
+
         result
     }
 
     fn get_current_date(args: &Value) -> Result<String> {
-        let format = args.get("format")
+        let format = args
+            .get("format")
             .and_then(|v| v.as_str())
             .unwrap_or("readable");
-        
-        let timezone_str = args.get("timezone")
+
+        let timezone_str = args
+            .get("timezone")
             .and_then(|v| v.as_str())
             .unwrap_or("UTC");
-        
+
         let now = if timezone_str == "UTC" {
             Utc::now()
         } else {
             // For simplicity, use UTC and note timezone in output
             Utc::now()
         };
-        
+
         let result = match format {
             "iso" => now.format("%Y-%m-%d").to_string(),
             "readable" => now.format("%B %d, %Y").to_string(),
@@ -403,26 +413,29 @@ impl Tools {
                 if timezone_str == "UTC" {
                     now.format("%A, %B %d, %Y at %H:%M:%S UTC").to_string()
                 } else {
-                    format!("{} (timezone: {})", now.format("%A, %B %d, %Y at %H:%M:%S UTC"), timezone_str)
+                    format!(
+                        "{} (timezone: {})",
+                        now.format("%A, %B %d, %Y at %H:%M:%S UTC"),
+                        timezone_str
+                    )
                 }
-            },
+            }
             _ => now.format("%B %d, %Y").to_string(),
         };
-        
+
         Ok(result)
     }
 
     fn get_current_time(args: &Value) -> Result<String> {
-        let format = args.get("format")
-            .and_then(|v| v.as_str())
-            .unwrap_or("24h");
-        
-        let timezone_str = args.get("timezone")
+        let format = args.get("format").and_then(|v| v.as_str()).unwrap_or("24h");
+
+        let timezone_str = args
+            .get("timezone")
             .and_then(|v| v.as_str())
             .unwrap_or("UTC");
-        
+
         let now = Utc::now();
-        
+
         let result = match format {
             "12h" => now.format("%I:%M:%S %p UTC").to_string(),
             "24h" => now.format("%H:%M:%S UTC").to_string(),
@@ -430,7 +443,7 @@ impl Tools {
             "timestamp" => now.timestamp().to_string(),
             _ => now.format("%H:%M:%S UTC").to_string(),
         };
-        
+
         if timezone_str != "UTC" {
             Ok(format!("{} (requested timezone: {})", result, timezone_str))
         } else {
@@ -439,10 +452,11 @@ impl Tools {
     }
 
     fn calculate(args: &Value) -> Result<String> {
-        let expression = args.get("expression")
+        let expression = args
+            .get("expression")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'expression' parameter"))?;
-        
+
         // Simple math evaluation (for production, use a proper math parser)
         // This is a basic implementation - consider using meval or similar for production
         let result = Self::eval_math(expression)?;
@@ -451,32 +465,37 @@ impl Tools {
 
     fn eval_math(expr: &str) -> Result<f64> {
         // Use meval for proper math evaluation
-        meval::eval_str(expr)
-            .map_err(|e| anyhow::anyhow!("Math evaluation error: {}", e))
+        meval::eval_str(expr).map_err(|e| anyhow::anyhow!("Math evaluation error: {}", e))
     }
 
     fn format_date(args: &Value) -> Result<String> {
-        let date_str = args.get("date")
+        let date_str = args
+            .get("date")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'date' parameter"))?;
-        
-        let output_format = args.get("output_format")
+
+        let output_format = args
+            .get("output_format")
             .and_then(|v| v.as_str())
             .unwrap_or("readable");
-        
+
         // Try to parse the date
         let dt = DateTime::parse_from_rfc3339(date_str)
             .or_else(|_| {
                 // Try other formats
-                date_str.parse::<DateTime<Utc>>()
+                date_str
+                    .parse::<DateTime<Utc>>()
                     .map(|dt| dt.with_timezone(&FixedOffset::east_opt(0).unwrap()))
             })
             .or_else(|_| {
                 // Try timestamp
-                date_str.parse::<i64>()
-                    .map(|ts| DateTime::from_timestamp(ts, 0).unwrap().with_timezone(&FixedOffset::east_opt(0).unwrap()))
+                date_str.parse::<i64>().map(|ts| {
+                    DateTime::from_timestamp(ts, 0)
+                        .unwrap()
+                        .with_timezone(&FixedOffset::east_opt(0).unwrap())
+                })
             })?;
-        
+
         let result = match output_format {
             "iso" => dt.format("%Y-%m-%dT%H:%M:%S%z").to_string(),
             "readable" => dt.format("%B %d, %Y at %H:%M:%S").to_string(),
@@ -493,116 +512,130 @@ impl Tools {
                 } else {
                     "just now".to_string()
                 }
-            },
+            }
             _ => dt.format("%B %d, %Y").to_string(),
         };
-        
+
         Ok(result)
     }
 
     fn timezone_convert(args: &Value) -> Result<String> {
         // Simplified - for production, use chrono-tz
-        let time_str = args.get("time")
+        let time_str = args
+            .get("time")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'time' parameter"))?;
-        
-        let _from = args.get("from_timezone")
+
+        let _from = args
+            .get("from_timezone")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'from_timezone' parameter"))?;
-        
-        let _to = args.get("to_timezone")
+
+        let _to = args
+            .get("to_timezone")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'to_timezone' parameter"))?;
-        
+
         // Parse and convert (simplified - use chrono-tz for full support)
-        let dt = DateTime::parse_from_rfc3339(time_str)
-            .or_else(|_| time_str.parse::<DateTime<Utc>>().map(|dt| dt.with_timezone(&FixedOffset::east_opt(0).unwrap())))?;
-        
-        Ok(format!("Converted time: {} (Note: Full timezone conversion requires chrono-tz library)", dt.format("%Y-%m-%d %H:%M:%S")))
+        let dt = DateTime::parse_from_rfc3339(time_str).or_else(|_| {
+            time_str
+                .parse::<DateTime<Utc>>()
+                .map(|dt| dt.with_timezone(&FixedOffset::east_opt(0).unwrap()))
+        })?;
+
+        Ok(format!(
+            "Converted time: {} (Note: Full timezone conversion requires chrono-tz library)",
+            dt.format("%Y-%m-%d %H:%M:%S")
+        ))
     }
 
     fn generate_uuid(args: &Value) -> Result<String> {
-        let version = args.get("version")
-            .and_then(|v| v.as_str())
-            .unwrap_or("v4");
-        
+        let version = args.get("version").and_then(|v| v.as_str()).unwrap_or("v4");
+
         match version {
             "v4" => {
                 use uuid::Uuid;
                 Ok(Uuid::new_v4().to_string())
-            },
+            }
             "nil" => {
                 use uuid::Uuid;
                 Ok(Uuid::nil().to_string())
-            },
+            }
             _ => Err(anyhow::anyhow!("Invalid UUID version")),
         }
     }
 
     fn hash_string(args: &Value) -> Result<String> {
-        let text = args.get("text")
+        let text = args
+            .get("text")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'text' parameter"))?;
-        
-        let algorithm = args.get("algorithm")
+
+        let algorithm = args
+            .get("algorithm")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'algorithm' parameter"))?;
-        
+
         match algorithm {
             "md5" => {
                 let digest = md5::compute(text.as_bytes());
                 Ok(format!("{:x}", digest))
-            },
+            }
             "sha256" => {
-                use sha2::Sha256;
                 use digest::Digest;
+                use sha2::Sha256;
                 let mut hasher = Sha256::new();
                 hasher.update(text.as_bytes());
                 Ok(format!("{:x}", hasher.finalize()))
-            },
+            }
             "sha512" => {
-                use sha2::Sha512;
                 use digest::Digest;
+                use sha2::Sha512;
                 let mut hasher = Sha512::new();
                 hasher.update(text.as_bytes());
                 Ok(format!("{:x}", hasher.finalize()))
-            },
+            }
             _ => Err(anyhow::anyhow!("Unsupported algorithm")),
         }
     }
 
     fn base64_encode(args: &Value) -> Result<String> {
-        let text = args.get("text")
+        let text = args
+            .get("text")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'text' parameter"))?;
-        
-        use base64::{Engine as _, engine::general_purpose};
+
+        use base64::{engine::general_purpose, Engine as _};
         Ok(general_purpose::STANDARD.encode(text.as_bytes()))
     }
 
     fn base64_decode(args: &Value) -> Result<String> {
-        let text = args.get("text")
+        let text = args
+            .get("text")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'text' parameter"))?;
-        
-        use base64::{Engine as _, engine::general_purpose};
+
+        use base64::{engine::general_purpose, Engine as _};
         let decoded = general_purpose::STANDARD.decode(text)?;
         Ok(String::from_utf8(decoded)?)
     }
 
     fn unit_convert(args: &Value) -> Result<String> {
-        let value = args.get("value")
+        let value = args
+            .get("value")
             .and_then(|v| v.as_f64())
             .ok_or_else(|| anyhow::anyhow!("Missing 'value' parameter"))?;
-        
-        let from_unit = args.get("from_unit")
+
+        let from_unit = args
+            .get("from_unit")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'from_unit' parameter"))?;
-        
-        let to_unit = args.get("to_unit")
+
+        let to_unit = args
+            .get("to_unit")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'to_unit' parameter"))?;
-        
+
         let result = Self::convert_unit(value, from_unit, to_unit)?;
         Ok(format!("{} {} = {} {}", value, from_unit, result, to_unit))
     }
@@ -610,7 +643,7 @@ impl Tools {
     fn convert_unit(value: f64, from: &str, to: &str) -> Result<f64> {
         let from_lower = from.to_lowercase();
         let to_lower = to.to_lowercase();
-        
+
         // Temperature conversions
         if from_lower.as_str() == "celsius" && to_lower.as_str() == "fahrenheit" {
             return Ok(value * 9.0 / 5.0 + 32.0);
@@ -618,7 +651,7 @@ impl Tools {
         if from_lower.as_str() == "fahrenheit" && to_lower.as_str() == "celsius" {
             return Ok((value - 32.0) * 5.0 / 9.0);
         }
-        
+
         // Length conversions (to meters first, then to target)
         let meters = match from_lower.as_str() {
             "km" | "kilometer" | "kilometers" => value * 1000.0,
@@ -631,7 +664,7 @@ impl Tools {
             "inch" | "inches" | "in" => value * 0.0254,
             _ => return Err(anyhow::anyhow!("Unsupported unit: {}", from)),
         };
-        
+
         let result = match to_lower.as_str() {
             "km" | "kilometer" | "kilometers" => meters / 1000.0,
             "m" | "meter" | "meters" => meters,
@@ -643,79 +676,90 @@ impl Tools {
             "inch" | "inches" | "in" => meters / 0.0254,
             _ => return Err(anyhow::anyhow!("Unsupported unit: {}", to)),
         };
-        
+
         Ok(result)
     }
 
     fn extract_keywords(args: &Value) -> Result<String> {
-        let text = args.get("text")
+        let text = args
+            .get("text")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'text' parameter"))?;
-        
-        let max_keywords = args.get("max_keywords")
+
+        let max_keywords = args
+            .get("max_keywords")
             .and_then(|v| v.as_u64())
             .unwrap_or(10) as usize;
-        
+
         // Simple keyword extraction (for production, use proper NLP)
         let words: Vec<&str> = text
             .split_whitespace()
             .filter(|w| w.len() > 3) // Filter short words
             .collect();
-        
+
         // Count word frequencies
         use std::collections::HashMap;
         let mut freq: HashMap<&str, usize> = HashMap::new();
         for word in &words {
             *freq.entry(word).or_insert(0) += 1;
         }
-        
+
         let mut keywords: Vec<(&str, usize)> = freq.into_iter().collect();
         keywords.sort_by(|a, b| b.1.cmp(&a.1));
         keywords.truncate(max_keywords);
-        
-        let result: Vec<String> = keywords.iter()
+
+        let result: Vec<String> = keywords
+            .iter()
             .map(|(word, count)| format!("{} ({}x)", word, count))
             .collect();
-        
+
         Ok(result.join(", "))
     }
 
     fn compare_values(args: &Value) -> Result<String> {
-        let value1 = args.get("value1")
+        let value1 = args
+            .get("value1")
             .and_then(|v| v.as_f64())
             .ok_or_else(|| anyhow::anyhow!("Missing 'value1' parameter"))?;
-        
-        let value2 = args.get("value2")
+
+        let value2 = args
+            .get("value2")
             .and_then(|v| v.as_f64())
             .ok_or_else(|| anyhow::anyhow!("Missing 'value2' parameter"))?;
-        
+
         let diff = (value1 - value2).abs();
         let diff_percent = if value2 != 0.0 {
             (diff / value2.abs()) * 100.0
         } else {
             0.0
         };
-        
+
         if value1 > value2 {
-            Ok(format!("{} is {} larger than {} (difference: {:.2}, {:.1}% more)", 
-                value1, diff, value2, diff, diff_percent))
+            Ok(format!(
+                "{} is {} larger than {} (difference: {:.2}, {:.1}% more)",
+                value1, diff, value2, diff, diff_percent
+            ))
         } else if value1 < value2 {
-            Ok(format!("{} is {} smaller than {} (difference: {:.2}, {:.1}% less)", 
-                value1, diff, value2, diff, diff_percent))
+            Ok(format!(
+                "{} is {} smaller than {} (difference: {:.2}, {:.1}% less)",
+                value1, diff, value2, diff, diff_percent
+            ))
         } else {
             Ok(format!("{} and {} are equal", value1, value2))
         }
     }
 
     fn format_number(args: &Value) -> Result<String> {
-        let number = args.get("number")
+        let number = args
+            .get("number")
             .and_then(|v| v.as_f64())
             .ok_or_else(|| anyhow::anyhow!("Missing 'number' parameter"))?;
-        
-        let format = args.get("format")
+
+        let format = args
+            .get("format")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'format' parameter"))?;
-        
+
         let result = match format {
             "currency" => format!("${:.2}", number),
             "percentage" => format!("{:.1}%", number * 100.0),
@@ -724,7 +768,7 @@ impl Tools {
                 let formatted = format!("{:.0}", number);
                 // Simple comma insertion (for production use proper formatting)
                 formatted
-            },
+            }
             "ordinal" => {
                 let n = number as i64;
                 let suffix = match n % 100 {
@@ -734,58 +778,65 @@ impl Tools {
                         2 => "nd",
                         3 => "rd",
                         _ => "th",
-                    }
+                    },
                 };
                 format!("{}{}", n, suffix)
-            },
+            }
             _ => return Err(anyhow::anyhow!("Unsupported format: {}", format)),
         };
-        
+
         Ok(result)
     }
 
     fn validate_url(args: &Value) -> Result<String> {
-        let url_str = args.get("url")
+        let url_str = args
+            .get("url")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'url' parameter"))?;
-        
+
         match url::Url::parse(url_str) {
-            Ok(url) => {
-                Ok(format!(
-                    "Valid URL\nDomain: {}\nPath: {}\nScheme: {}",
-                    url.domain().unwrap_or("N/A"),
-                    url.path(),
-                    url.scheme()
-                ))
-            },
-            Err(e) => Ok(format!("Invalid URL: {}", e))
+            Ok(url) => Ok(format!(
+                "Valid URL\nDomain: {}\nPath: {}\nScheme: {}",
+                url.domain().unwrap_or("N/A"),
+                url.path(),
+                url.scheme()
+            )),
+            Err(e) => Ok(format!("Invalid URL: {}", e)),
         }
     }
 
     fn days_between_dates(args: &Value) -> Result<String> {
-        let date1_str = args.get("date1")
+        let date1_str = args
+            .get("date1")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'date1' parameter"))?;
-        
-        let date2_str = args.get("date2")
-            .and_then(|v| v.as_str());
-        
+
+        let date2_str = args.get("date2").and_then(|v| v.as_str());
+
         let date1 = Self::parse_date(date1_str)?;
         let date2 = if let Some(ds) = date2_str {
             Self::parse_date(ds)?
         } else {
             Utc::now()
         };
-        
+
         let diff = (date2 - date1).num_days();
         let abs_diff = diff.abs();
-        
+
         if diff > 0 {
-            Ok(format!("{} days from {} to {}", abs_diff, date1_str, 
-                date2_str.unwrap_or("today")))
+            Ok(format!(
+                "{} days from {} to {}",
+                abs_diff,
+                date1_str,
+                date2_str.unwrap_or("today")
+            ))
         } else if diff < 0 {
-            Ok(format!("{} days ago (from {} to {})", abs_diff, date1_str,
-                date2_str.unwrap_or("today")))
+            Ok(format!(
+                "{} days ago (from {} to {})",
+                abs_diff,
+                date1_str,
+                date2_str.unwrap_or("today")
+            ))
         } else {
             Ok("0 days (same date)".to_string())
         }
@@ -796,38 +847,39 @@ impl Tools {
         if let Ok(ts) = date_str.parse::<i64>() {
             return Ok(DateTime::from_timestamp(ts, 0).unwrap());
         }
-        
+
         if let Ok(dt) = DateTime::parse_from_rfc3339(date_str) {
             return Ok(dt.with_timezone(&Utc));
         }
-        
+
         if let Ok(dt) = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
             return Ok(dt.and_hms_opt(0, 0, 0).unwrap().and_utc());
         }
-        
+
         Err(anyhow::anyhow!("Could not parse date: {}", date_str))
     }
 
     fn extract_entities(args: &Value) -> Result<String> {
-        let text = args.get("text")
+        let text = args
+            .get("text")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'text' parameter"))?;
-        
+
         // Simple entity extraction (for production, use proper NLP library)
         let mut entities = Vec::new();
-        
+
         // Extract potential dates (YYYY-MM-DD, MM/DD/YYYY, etc.)
         let date_pattern = regex::Regex::new(r"\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{4}").unwrap();
         for mat in date_pattern.find_iter(text) {
             entities.push(format!("Date: {}", mat.as_str()));
         }
-        
+
         // Extract URLs
         let url_pattern = regex::Regex::new(r"https?://[^\s]+").unwrap();
         for mat in url_pattern.find_iter(text) {
             entities.push(format!("URL: {}", mat.as_str()));
         }
-        
+
         // Extract capitalized words (potential names/organizations)
         let cap_pattern = regex::Regex::new(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b").unwrap();
         for mat in cap_pattern.find_iter(text) {
@@ -836,7 +888,7 @@ impl Tools {
                 entities.push(format!("Potential entity: {}", word));
             }
         }
-        
+
         if entities.is_empty() {
             Ok("No entities found".to_string())
         } else {

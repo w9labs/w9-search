@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum ProviderType {
     OpenRouter,
     Groq,
@@ -26,6 +26,14 @@ impl std::fmt::Display for ProviderType {
 }
 
 impl ProviderType {
+    pub const ALL: [ProviderType; 5] = [
+        ProviderType::OpenRouter,
+        ProviderType::Groq,
+        ProviderType::Cerebras,
+        ProviderType::Cohere,
+        ProviderType::Pollinations,
+    ];
+
     pub fn as_str(&self) -> &'static str {
         match self {
             ProviderType::OpenRouter => "openrouter",
@@ -45,6 +53,10 @@ impl ProviderType {
             "pollinations" => Some(ProviderType::Pollinations),
             _ => None,
         }
+    }
+
+    pub fn all() -> &'static [ProviderType] {
+        &Self::ALL
     }
 }
 
@@ -145,12 +157,7 @@ const POLLINATIONS_ALLOWED_MODELS: &[&str] = &[
     "qwen-safety",
 ];
 
-const SEARCH_PRIORITY: &[&str] = &[
-    "perplexity-fast",
-    "gemini-search",
-    "sonar",
-    "search",
-];
+const SEARCH_PRIORITY: &[&str] = &["perplexity-fast", "gemini-search", "sonar", "search"];
 
 const GENERAL_PRIORITY: &[&str] = &[
     "deepseek-r1",
@@ -201,7 +208,7 @@ pub struct LLMManager {
 impl LLMManager {
     pub fn new(db: Arc<crate::db::Database>) -> Self {
         let mut api_keys = HashMap::new();
-        
+
         if let Ok(key) = std::env::var("OPENROUTER_API_KEY") {
             api_keys.insert(ProviderType::OpenRouter, key);
         }
@@ -227,64 +234,102 @@ impl LLMManager {
 
     pub async fn fetch_available_models(&self) -> Result<()> {
         let mut all_models = Vec::new();
+        let provider_enabled = self.db.get_provider_status_map().await.unwrap_or_default();
         // Use a client with timeout to prevent hanging during startup
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()?;
 
         // 1. OpenRouter (Free models)
-        if let Some(key) = self.api_keys.get(&ProviderType::OpenRouter) {
-            tracing::info!("Fetching OpenRouter models...");
-            match self.fetch_openrouter_models(&client, key).await {
-                Ok(mut models) => all_models.append(&mut models),
-                Err(e) => tracing::error!("Failed to fetch OpenRouter models: {}", e),
-            }
-            
-            // Also fetch OpenRouter limits
-            if let Err(e) = self.fetch_openrouter_limits(&client, key).await {
-                tracing::warn!("Failed to fetch OpenRouter limits: {}", e);
+        if provider_enabled
+            .get(ProviderType::OpenRouter.as_str())
+            .copied()
+            .unwrap_or(true)
+        {
+            if let Some(key) = self.api_keys.get(&ProviderType::OpenRouter) {
+                tracing::info!("Fetching OpenRouter models...");
+                match self.fetch_openrouter_models(&client, key).await {
+                    Ok(mut models) => all_models.append(&mut models),
+                    Err(e) => tracing::error!("Failed to fetch OpenRouter models: {}", e),
+                }
+
+                // Also fetch OpenRouter limits
+                if let Err(e) = self.fetch_openrouter_limits(&client, key).await {
+                    tracing::warn!("Failed to fetch OpenRouter limits: {}", e);
+                }
             }
         }
 
         // 2. Groq
-        if let Some(key) = self.api_keys.get(&ProviderType::Groq) {
-            tracing::info!("Fetching Groq models...");
-            match self.fetch_groq_models(&client, key).await {
-                Ok(mut models) => all_models.append(&mut models),
-                Err(e) => tracing::error!("Failed to fetch Groq models: {}", e),
+        if provider_enabled
+            .get(ProviderType::Groq.as_str())
+            .copied()
+            .unwrap_or(true)
+        {
+            if let Some(key) = self.api_keys.get(&ProviderType::Groq) {
+                tracing::info!("Fetching Groq models...");
+                match self.fetch_groq_models(&client, key).await {
+                    Ok(mut models) => all_models.append(&mut models),
+                    Err(e) => tracing::error!("Failed to fetch Groq models: {}", e),
+                }
             }
         }
 
         // 3. Cerebras
-        if let Some(key) = self.api_keys.get(&ProviderType::Cerebras) {
-            tracing::info!("Fetching Cerebras models...");
-            match self.fetch_cerebras_models(&client, key).await {
-                Ok(mut models) => all_models.append(&mut models),
-                Err(e) => tracing::error!("Failed to fetch Cerebras models: {}", e),
+        if provider_enabled
+            .get(ProviderType::Cerebras.as_str())
+            .copied()
+            .unwrap_or(true)
+        {
+            if let Some(key) = self.api_keys.get(&ProviderType::Cerebras) {
+                tracing::info!("Fetching Cerebras models...");
+                match self.fetch_cerebras_models(&client, key).await {
+                    Ok(mut models) => all_models.append(&mut models),
+                    Err(e) => tracing::error!("Failed to fetch Cerebras models: {}", e),
+                }
             }
         }
 
         // 4. Cohere
-        if let Some(key) = self.api_keys.get(&ProviderType::Cohere) {
-            tracing::info!("Fetching Cohere models...");
-            match self.fetch_cohere_models(&client, key).await {
-                Ok(mut models) => all_models.append(&mut models),
-                Err(e) => tracing::error!("Failed to fetch Cohere models: {}", e),
+        if provider_enabled
+            .get(ProviderType::Cohere.as_str())
+            .copied()
+            .unwrap_or(true)
+        {
+            if let Some(key) = self.api_keys.get(&ProviderType::Cohere) {
+                tracing::info!("Fetching Cohere models...");
+                match self.fetch_cohere_models(&client, key).await {
+                    Ok(mut models) => all_models.append(&mut models),
+                    Err(e) => tracing::error!("Failed to fetch Cohere models: {}", e),
+                }
             }
         }
 
         // 5. Pollinations
-        tracing::info!("Fetching Pollinations models...");
-        match self.fetch_pollinations_models(&client).await {
-            Ok(mut models) => all_models.append(&mut models),
-            Err(e) => tracing::error!("Failed to fetch Pollinations models: {}", e),
-        }
+        if provider_enabled
+            .get(ProviderType::Pollinations.as_str())
+            .copied()
+            .unwrap_or(true)
+        {
+            tracing::info!("Fetching Pollinations models...");
+            match self.fetch_pollinations_models(&client).await {
+                Ok(mut models) => all_models.append(&mut models),
+                Err(e) => tracing::error!("Failed to fetch Pollinations models: {}", e),
+            }
 
-        if let Some(key) = self.api_keys.get(&ProviderType::Pollinations) {
-            if let Err(e) = self.fetch_pollinations_limits(&client, key).await {
-                tracing::warn!("Failed to fetch Pollinations limits: {}", e);
+            if let Some(key) = self.api_keys.get(&ProviderType::Pollinations) {
+                if let Err(e) = self.fetch_pollinations_limits(&client, key).await {
+                    tracing::warn!("Failed to fetch Pollinations limits: {}", e);
+                }
             }
         }
+
+        all_models.retain(|model| {
+            provider_enabled
+                .get(model.provider.as_str())
+                .copied()
+                .unwrap_or(true)
+        });
 
         let count = all_models.len();
         {
@@ -292,69 +337,92 @@ impl LLMManager {
             *w = all_models;
         }
         tracing::info!("Successfully updated model list. Total models: {}", count);
-        
+
         Ok(())
     }
-    
+
     pub async fn refresh_llm_limits(&self) -> Result<()> {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(10))
             .build()?;
+        let provider_enabled = self.db.get_provider_status_map().await.unwrap_or_default();
 
-        if let Some(key) = self.api_keys.get(&ProviderType::OpenRouter) {
-            let _ = self.fetch_openrouter_limits(&client, key).await;
+        if provider_enabled
+            .get(ProviderType::OpenRouter.as_str())
+            .copied()
+            .unwrap_or(true)
+        {
+            if let Some(key) = self.api_keys.get(&ProviderType::OpenRouter) {
+                let _ = self.fetch_openrouter_limits(&client, key).await;
+            }
         }
 
-        if let Some(key) = self.api_keys.get(&ProviderType::Pollinations) {
-            let _ = self.fetch_pollinations_limits(&client, key).await;
+        if provider_enabled
+            .get(ProviderType::Pollinations.as_str())
+            .copied()
+            .unwrap_or(true)
+        {
+            if let Some(key) = self.api_keys.get(&ProviderType::Pollinations) {
+                let _ = self.fetch_pollinations_limits(&client, key).await;
+            }
         }
 
         Ok(())
     }
 
     async fn fetch_openrouter_limits(&self, client: &reqwest::Client, key: &str) -> Result<()> {
-        let resp = client.get("https://openrouter.ai/api/v1/key")
+        let resp = client
+            .get("https://openrouter.ai/api/v1/key")
             .header("Authorization", format!("Bearer {}", key))
             .send()
             .await?;
-            
+
         if resp.status().is_success() {
             let json: serde_json::Value = resp.json().await?;
             if let Some(data) = json.get("data") {
-                let requests_limit = data.get("rate_limit")
+                let requests_limit = data
+                    .get("rate_limit")
                     .and_then(|rl| rl.get("requests"))
                     .and_then(|r| r.as_i64());
-                    
-                let interval = data.get("rate_limit")
+
+                let interval = data
+                    .get("rate_limit")
                     .and_then(|rl| rl.get("interval"))
                     .and_then(|i| i.as_str());
 
                 // Map to day/min limits
                 let mut limit_day = None;
-                
+
                 if let Some(reqs) = requests_limit {
                     if interval == Some("1d") {
                         limit_day = Some(reqs);
                     }
                 }
-                
+
                 // Update DB if we found a limit
                 if limit_day.is_some() {
-                    self.db.update_provider_limits(
-                        &ProviderType::OpenRouter,
-                        None,
-                        None,
-                        None,
-                        limit_day
-                    ).await?;
+                    self.db
+                        .update_provider_limits(
+                            &ProviderType::OpenRouter,
+                            None,
+                            None,
+                            None,
+                            limit_day,
+                        )
+                        .await?;
                 }
             }
         }
         Ok(())
     }
 
-    async fn fetch_openrouter_models(&self, client: &reqwest::Client, _key: &str) -> Result<Vec<Model>> {
-        let resp: OpenRouterResponse = client.get("https://openrouter.ai/api/v1/models")
+    async fn fetch_openrouter_models(
+        &self,
+        client: &reqwest::Client,
+        _key: &str,
+    ) -> Result<Vec<Model>> {
+        let resp: OpenRouterResponse = client
+            .get("https://openrouter.ai/api/v1/models")
             .send()
             .await?
             .json()
@@ -368,12 +436,15 @@ impl LLMManager {
             .filter(|s| !s.is_empty())
             .collect();
 
-        let models = resp.data.into_iter()
+        let models = resp
+            .data
+            .into_iter()
             .filter(|m| {
                 let p = m.pricing.as_ref();
                 let is_free = if let Some(pricing) = p {
                     let prompt_free = pricing.prompt.parse::<f64>().unwrap_or(1.0) <= 0.000001;
-                    let completion_free = pricing.completion.parse::<f64>().unwrap_or(1.0) <= 0.000001;
+                    let completion_free =
+                        pricing.completion.parse::<f64>().unwrap_or(1.0) <= 0.000001;
                     prompt_free && completion_free
                 } else {
                     false
@@ -405,19 +476,22 @@ impl LLMManager {
                 }
             })
             .collect();
-        
+
         Ok(models)
     }
 
     async fn fetch_groq_models(&self, client: &reqwest::Client, key: &str) -> Result<Vec<Model>> {
-        let resp: StandardModelResponse = client.get("https://api.groq.com/openai/v1/models")
+        let resp: StandardModelResponse = client
+            .get("https://api.groq.com/openai/v1/models")
             .header("Authorization", format!("Bearer {}", key))
             .send()
             .await?
             .json()
             .await?;
 
-        let models = resp.data.into_iter()
+        let models = resp
+            .data
+            .into_iter()
             .map(|m| {
                 let id = m.id;
                 let name = id.clone();
@@ -438,19 +512,26 @@ impl LLMManager {
                 }
             })
             .collect();
-        
+
         Ok(models)
     }
 
-    async fn fetch_cerebras_models(&self, client: &reqwest::Client, _key: &str) -> Result<Vec<Model>> {
+    async fn fetch_cerebras_models(
+        &self,
+        client: &reqwest::Client,
+        _key: &str,
+    ) -> Result<Vec<Model>> {
         // Use public endpoint for better metadata
-        let resp: CerebrasModelResponse = client.get("https://api.cerebras.ai/public/v1/models")
+        let resp: CerebrasModelResponse = client
+            .get("https://api.cerebras.ai/public/v1/models")
             .send()
             .await?
             .json()
             .await?;
 
-        let models = resp.data.into_iter()
+        let models = resp
+            .data
+            .into_iter()
             .map(|m| {
                 let id = m.id;
                 let name = id.clone();
@@ -471,12 +552,13 @@ impl LLMManager {
                 }
             })
             .collect();
-        
+
         Ok(models)
     }
 
     async fn fetch_cohere_models(&self, client: &reqwest::Client, key: &str) -> Result<Vec<Model>> {
-        let resp: CohereModelResponse = client.get("https://api.cohere.ai/v1/models")
+        let resp: CohereModelResponse = client
+            .get("https://api.cohere.ai/v1/models")
             .header("Authorization", format!("Bearer {}", key))
             .header("X-Client-Name", "w9-search")
             .send()
@@ -484,7 +566,9 @@ impl LLMManager {
             .json()
             .await?;
 
-        let models = resp.models.into_iter()
+        let models = resp
+            .models
+            .into_iter()
             .map(|m| {
                 let id = m.name;
                 let name = id.clone();
@@ -505,13 +589,14 @@ impl LLMManager {
                 }
             })
             .collect();
-        
+
         Ok(models)
     }
 
     async fn fetch_pollinations_models(&self, client: &reqwest::Client) -> Result<Vec<Model>> {
         // Fetch from gen.pollinations.ai/text/models for metadata
-        let resp: Vec<PollinationsModel> = client.get("https://gen.pollinations.ai/text/models")
+        let resp: Vec<PollinationsModel> = client
+            .get("https://gen.pollinations.ai/text/models")
             .send()
             .await?
             .json()
@@ -519,7 +604,8 @@ impl LLMManager {
 
         let allowed: HashSet<&'static str> = POLLINATIONS_ALLOWED_MODELS.iter().copied().collect();
 
-        let models = resp.into_iter()
+        let models = resp
+            .into_iter()
             .filter(|m| {
                 allowed.contains(m.name.as_str())
                     || m.aliases
@@ -535,12 +621,18 @@ impl LLMManager {
                 let search_hint = infer_native_search(&id, &name, description.as_deref())
                     || m.aliases
                         .as_ref()
-                        .map(|aliases| aliases.iter().any(|alias| alias.to_lowercase().contains("search") || alias.to_lowercase().contains("sonar")))
+                        .map(|aliases| {
+                            aliases.iter().any(|alias| {
+                                alias.to_lowercase().contains("search")
+                                    || alias.to_lowercase().contains("sonar")
+                            })
+                        })
                         .unwrap_or(false);
                 let supports_reasoning = m.reasoning.unwrap_or(false)
                     || description_lc.contains("reasoning")
                     || infer_reasoning(&id, &name, description.as_deref());
-                let is_specialized = infer_specialized(description.as_deref(), m.is_specialized.unwrap_or(false));
+                let is_specialized =
+                    infer_specialized(description.as_deref(), m.is_specialized.unwrap_or(false));
 
                 Model {
                     id,
@@ -556,29 +648,32 @@ impl LLMManager {
                 }
             })
             .collect();
-        
+
         Ok(models)
     }
 
     async fn fetch_pollinations_limits(&self, client: &reqwest::Client, key: &str) -> Result<()> {
-        let resp = client.get("https://gen.pollinations.ai/account/balance")
+        let resp = client
+            .get("https://gen.pollinations.ai/account/balance")
             .header("Authorization", format!("Bearer {}", key))
             .send()
             .await?;
-            
+
         if resp.status().is_success() {
             let json: serde_json::Value = resp.json().await?;
             if let Some(balance) = json.get("balance").and_then(|b| b.as_f64()) {
                 // Map pollen balance to "day" limits for the dashboard bar
-                // We'll treat 1000 pollen as a reference "limit" if no budget is set, 
+                // We'll treat 1000 pollen as a reference "limit" if no budget is set,
                 // or just store the balance as remaining.
-                self.db.update_provider_limits(
-                    &ProviderType::Pollinations,
-                    None,
-                    None,
-                    None, // We'll use the "day" field to store balance/remaining
-                    Some(balance as i64) 
-                ).await?;
+                self.db
+                    .update_provider_limits(
+                        &ProviderType::Pollinations,
+                        None,
+                        None,
+                        None, // We'll use the "day" field to store balance/remaining
+                        Some(balance as i64),
+                    )
+                    .await?;
             }
         }
         Ok(())
@@ -589,7 +684,12 @@ impl LLMManager {
     }
 
     pub async fn get_model(&self, id: &str) -> Option<Model> {
-        self.models.read().await.iter().find(|m| m.id == id).cloned()
+        self.models
+            .read()
+            .await
+            .iter()
+            .find(|m| m.id == id)
+            .cloned()
     }
 
     pub async fn pick_default_model(&self, prefer_search: bool) -> Option<Model> {
@@ -598,10 +698,7 @@ impl LLMManager {
             return None;
         }
 
-        let mut candidates: Vec<Model> = models
-            .into_iter()
-            .filter(|m| !m.is_specialized)
-            .collect();
+        let mut candidates: Vec<Model> = models.into_iter().filter(|m| !m.is_specialized).collect();
 
         if candidates.is_empty() {
             candidates = self.get_models().await;
@@ -636,7 +733,7 @@ impl LLMManager {
             .cloned()
             .or_else(|| candidates.first().cloned())
     }
-    
+
     pub async fn check_rate_limit(&self, provider: ProviderType) -> Result<bool> {
         self.db.check_rate_limit(&provider).await
     }
@@ -648,13 +745,22 @@ impl LLMManager {
         tools: Option<Vec<serde_json::Value>>,
         reasoning_enabled: bool,
     ) -> Result<serde_json::Value> {
-        let model = self.get_model(model_id).await
+        let model = self
+            .get_model(model_id)
+            .await
             .ok_or_else(|| anyhow::anyhow!("Model {} not found", model_id))?;
-        
+
         let provider = model.provider;
-        
+
+        if !self.db.is_provider_enabled(provider.as_str()).await? {
+            return Err(anyhow::anyhow!("Provider {} is disabled", provider));
+        }
+
         if !self.check_rate_limit(provider.clone()).await? {
-            return Err(anyhow::anyhow!("Rate limit exceeded for provider {}", provider));
+            return Err(anyhow::anyhow!(
+                "Rate limit exceeded for provider {}",
+                provider
+            ));
         }
 
         let client = reqwest::Client::builder()
@@ -665,17 +771,18 @@ impl LLMManager {
 
         match provider {
             ProviderType::OpenRouter => {
-                let key = api_key
-                    .as_deref()
-                    .ok_or_else(|| anyhow::anyhow!("API key not found for provider {}", provider))?;
+                let key = api_key.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!("API key not found for provider {}", provider)
+                })?;
                 let request = serde_json::json!({
                     "model": model_id,
                     "messages": messages,
                     "tools": tools
                 });
-                
+
                 let port = std::env::var("PORT").unwrap_or_else(|_| "3000".to_string());
-                let resp = client.post("https://openrouter.ai/api/v1/chat/completions")
+                let resp = client
+                    .post("https://openrouter.ai/api/v1/chat/completions")
                     .header("Authorization", format!("Bearer {}", key))
                     .header("Content-Type", "application/json")
                     .header("HTTP-Referer", format!("http://localhost:{}", port))
@@ -683,25 +790,26 @@ impl LLMManager {
                     .json(&request)
                     .send()
                     .await?;
-                    
+
                 if !resp.status().is_success() {
                     let text = resp.text().await?;
                     return Err(anyhow::anyhow!("OpenRouter Error: {}", text));
                 }
-                
+
                 Ok(resp.json().await?)
-            },
+            }
             ProviderType::Groq => {
-                let key = api_key
-                    .as_deref()
-                    .ok_or_else(|| anyhow::anyhow!("API key not found for provider {}", provider))?;
+                let key = api_key.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!("API key not found for provider {}", provider)
+                })?;
                 let request = serde_json::json!({
                     "model": model_id,
                     "messages": messages,
                     "tools": tools
                 });
-                
-                let resp = client.post("https://api.groq.com/openai/v1/chat/completions")
+
+                let resp = client
+                    .post("https://api.groq.com/openai/v1/chat/completions")
                     .header("Authorization", format!("Bearer {}", key))
                     .header("Content-Type", "application/json")
                     .json(&request)
@@ -712,32 +820,44 @@ impl LLMManager {
                     let text = resp.text().await?;
                     return Err(anyhow::anyhow!("Groq Error: {}", text));
                 }
-                
+
                 let headers = resp.headers();
-                let remaining_req = headers.get("x-ratelimit-remaining-requests")
+                let remaining_req = headers
+                    .get("x-ratelimit-remaining-requests")
                     .and_then(|h| h.to_str().ok())
                     .and_then(|s| s.parse::<i64>().ok());
-                let limit_req = headers.get("x-ratelimit-limit-requests")
+                let limit_req = headers
+                    .get("x-ratelimit-limit-requests")
                     .and_then(|h| h.to_str().ok())
                     .and_then(|s| s.parse::<i64>().ok());
-                    
+
                 if remaining_req.is_some() || limit_req.is_some() {
-                    let _ = self.db.update_provider_limits(&ProviderType::Groq, None, remaining_req, None, limit_req).await;
+                    let _ = self
+                        .db
+                        .update_provider_limits(
+                            &ProviderType::Groq,
+                            None,
+                            remaining_req,
+                            None,
+                            limit_req,
+                        )
+                        .await;
                 }
 
                 Ok(resp.json().await?)
-            },
+            }
             ProviderType::Cerebras => {
-                let key = api_key
-                    .as_deref()
-                    .ok_or_else(|| anyhow::anyhow!("API key not found for provider {}", provider))?;
+                let key = api_key.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!("API key not found for provider {}", provider)
+                })?;
                 let request = serde_json::json!({
                     "model": model_id,
                     "messages": messages,
                     "tools": tools
                 });
-                
-                let resp = client.post("https://api.cerebras.ai/v1/chat/completions")
+
+                let resp = client
+                    .post("https://api.cerebras.ai/v1/chat/completions")
                     .header("Authorization", format!("Bearer {}", key))
                     .header("Content-Type", "application/json")
                     .json(&request)
@@ -750,31 +870,46 @@ impl LLMManager {
                 }
 
                 let headers = resp.headers();
-                let remaining_day = headers.get("x-ratelimit-remaining-requests-day")
+                let remaining_day = headers
+                    .get("x-ratelimit-remaining-requests-day")
                     .and_then(|h| h.to_str().ok())
                     .and_then(|s| s.parse::<i64>().ok());
-                let limit_day = headers.get("x-ratelimit-limit-requests-day")
+                let limit_day = headers
+                    .get("x-ratelimit-limit-requests-day")
                     .and_then(|h| h.to_str().ok())
                     .and_then(|s| s.parse::<i64>().ok());
-                    
+
                 if remaining_day.is_some() || limit_day.is_some() {
-                    let _ = self.db.update_provider_limits(&ProviderType::Cerebras, None, remaining_day, None, limit_day).await;
+                    let _ = self
+                        .db
+                        .update_provider_limits(
+                            &ProviderType::Cerebras,
+                            None,
+                            remaining_day,
+                            None,
+                            limit_day,
+                        )
+                        .await;
                 }
 
                 Ok(resp.json().await?)
-            },
+            }
             ProviderType::Cohere => {
-                let key = api_key
-                    .as_deref()
-                    .ok_or_else(|| anyhow::anyhow!("API key not found for provider {}", provider))?;
-                let last_message = messages.last()
+                let key = api_key.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!("API key not found for provider {}", provider)
+                })?;
+                let last_message = messages
+                    .last()
                     .and_then(|m| m.get("content"))
                     .and_then(|c| c.as_str())
                     .ok_or_else(|| anyhow::anyhow!("No content in last message"))?;
 
                 let mut chat_history = Vec::new();
                 for msg in messages.iter().take(messages.len() - 1) {
-                    if let (Some(role), Some(content)) = (msg.get("role").and_then(|r| r.as_str()), msg.get("content").and_then(|c| c.as_str())) {
+                    if let (Some(role), Some(content)) = (
+                        msg.get("role").and_then(|r| r.as_str()),
+                        msg.get("content").and_then(|c| c.as_str()),
+                    ) {
                         let cohere_role = match role {
                             "user" => "USER",
                             "assistant" => "CHATBOT",
@@ -794,7 +929,8 @@ impl LLMManager {
                     "chat_history": chat_history,
                 });
 
-                let resp = client.post("https://api.cohere.ai/v1/chat")
+                let resp = client
+                    .post("https://api.cohere.ai/v1/chat")
                     .header("Authorization", format!("Bearer {}", key))
                     .header("Content-Type", "application/json")
                     .header("X-Client-Name", "w9-search")
@@ -808,9 +944,12 @@ impl LLMManager {
                 }
 
                 let cohere_resp: serde_json::Value = resp.json().await?;
-                
-                let text_response = cohere_resp.get("text").and_then(|t| t.as_str()).unwrap_or("");
-                
+
+                let text_response = cohere_resp
+                    .get("text")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("");
+
                 Ok(serde_json::json!({
                     "id": cohere_resp.get("generation_id"),
                     "object": "chat.completion",
@@ -832,7 +971,7 @@ impl LLMManager {
                         "total_tokens": 0
                     }
                 }))
-            },
+            }
             ProviderType::Pollinations => {
                 let mut request = serde_json::json!({
                     "model": model_id,
@@ -851,7 +990,8 @@ impl LLMManager {
                     request["reasoning_effort"] = serde_json::json!("medium");
                 }
 
-                let mut req = client.post("https://gen.pollinations.ai/v1/chat/completions")
+                let mut req = client
+                    .post("https://gen.pollinations.ai/v1/chat/completions")
                     .header("Content-Type", "application/json")
                     .json(&request);
 

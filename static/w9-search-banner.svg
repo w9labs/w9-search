@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 360" role="img" aria-label="W9 Search Banner">
+  <rect width="1400" height="360" rx="48" fill="#050505"/>
+  <rect x="24" y="24" width="1352" height="312" rx="36" fill="none" stroke="#e5e5e5" stroke-width="8"/>
+  <rect x="68" y="68" width="224" height="224" rx="36" fill="#111111" stroke="#e5e5e5" stroke-width="8"/>
+  <circle cx="164" cy="162" r="58" fill="none" stroke="#00ff41" stroke-width="18"/>
+  <path d="M206 204 L252 250" fill="none" stroke="#00ff41" stroke-width="18" stroke-linecap="round"/>
+  <text x="180" y="202" text-anchor="middle" font-family="monospace" font-size="72" font-weight="700" fill="#e5e5e5">W9</text>
+  <text x="180" y="248" text-anchor="middle" font-family="monospace" font-size="24" font-weight="700" letter-spacing="4" fill="#00ff41">SEARCH</text>
+  <text x="356" y="138" font-family="monospace" font-size="92" font-weight="700" letter-spacing="8" fill="#e5e5e5">W9 SEARCH</text>
+  <text x="358" y="210" font-family="monospace" font-size="30" font-weight="700" letter-spacing="4" fill="#00ff41">AUTO-ROUTED RESEARCH FOR THE W9 NETWORK</text>
+  <text x="358" y="258" font-family="monospace" font-size="22" fill="#b9b9b9">POLLINATIONS · HOSTED SEARXNG · SMART MODEL ROUTING</text>
+</svg>

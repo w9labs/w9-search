@@ -1,20 +1,23 @@
 use axum::{
-    extract::State, 
-    http::StatusCode, 
-    response::{IntoResponse, sse::{Event, Sse}}, 
-    Json
+    extract::State,
+    http::{HeaderMap, StatusCode},
+    response::{
+        sse::{Event, Sse},
+        IntoResponse, Response,
+    },
+    Json,
 };
-use futures::stream::Stream;
 use futures::StreamExt;
-use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
 use std::convert::Infallible;
 use std::time::Duration;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 
+use crate::auth;
 use crate::models::{QueryRequest, QueryResponse};
 use crate::rag::{RAGSystem, StreamEvent};
-use crate::AppState;
 use crate::search::WebSearch;
+use crate::AppState;
 
 async fn resolve_model(
     state: &AppState,
@@ -49,8 +52,13 @@ async fn resolve_model(
 
 pub async fn handle_query_stream(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<QueryRequest>,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+) -> Response {
+    if auth::require_session(&headers).is_none() {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+
     tracing::info!(
         "Received streaming query: '{}' (web_search: {}, model: {:?}, thread: {:?})",
         request.query,
@@ -60,7 +68,7 @@ pub async fn handle_query_stream(
     );
 
     let (tx, rx) = mpsc::channel(100);
-    
+
     // Spawn background task to run the query
     tokio::spawn(async move {
         // 1. Thread Management
@@ -69,14 +77,26 @@ pub async fn handle_query_stream(
             None => {
                 match state.db.create_thread(&request.query).await {
                     Ok(id) => {
-                        let _ = tx.send(Ok(StreamEvent::Status(format!("Created new thread: {}", id)))).await;
+                        let _ = tx
+                            .send(Ok(StreamEvent::Status(format!(
+                                "Created new thread: {}",
+                                id
+                            ))))
+                            .await;
                         // Send thread ID to client so it can update URL
                         // We'll define a new event type for this later or just use Status/a specific event
-                        let _ = tx.send(Ok(StreamEvent::Status(format!("THREAD_ID:{}", id)))).await;
+                        let _ = tx
+                            .send(Ok(StreamEvent::Status(format!("THREAD_ID:{}", id))))
+                            .await;
                         id
-                    },
+                    }
                     Err(e) => {
-                        let _ = tx.send(Ok(StreamEvent::Error(format!("Failed to create thread: {}", e)))).await;
+                        let _ = tx
+                            .send(Ok(StreamEvent::Error(format!(
+                                "Failed to create thread: {}",
+                                e
+                            ))))
+                            .await;
                         return;
                     }
                 }
@@ -93,8 +113,12 @@ pub async fn handle_query_stream(
         };
 
         // 3. Save User Message
-        if let Err(e) = state.db.add_message(&thread_id, "user", &request.query).await {
-             tracing::error!("Failed to save user message: {}", e);
+        if let Err(e) = state
+            .db
+            .add_message(&thread_id, "user", &request.query)
+            .await
+        {
+            tracing::error!("Failed to save user message: {}", e);
         }
 
         // 4. Model Selection
@@ -108,8 +132,7 @@ pub async fn handle_query_stream(
             }
         };
 
-        let search_provider = request.search_provider
-            .filter(|s| s != "auto");
+        let search_provider = request.search_provider.filter(|s| s != "auto");
 
         tracing::info!(
             "Using model '{}' (search: {}, reasoning: {}, tools: {}) and search provider '{:?}'",
@@ -119,10 +142,20 @@ pub async fn handle_query_stream(
             model.supports_tools,
             search_provider
         );
-        let _ = tx.send(Ok(StreamEvent::Status(format!("Using model: {}", model.name)))).await;
+        let _ = tx
+            .send(Ok(StreamEvent::Status(format!(
+                "Using model: {}",
+                model.name
+            ))))
+            .await;
 
-        let rag = RAGSystem::new(state.db.clone(), state.llm_manager.clone(), model, search_provider);
-        
+        let rag = RAGSystem::new(
+            state.db.clone(),
+            state.llm_manager.clone(),
+            model,
+            search_provider,
+        );
+
         // 5. Execute RAG with history
         match rag
             .query(
@@ -146,41 +179,55 @@ pub async fn handle_query_stream(
                 let _ = tx.send(Ok(StreamEvent::Error(e.to_string()))).await;
             }
         }
-        
+
         let _ = tx.send(Ok(StreamEvent::Done)).await;
     });
 
     // Create stream from channel
-    let stream = ReceiverStream::new(rx).map(|result| {
-        match result {
-            Ok(event) => {
-                Ok(Event::default()
-                    .json_data(event)
-                    .unwrap_or_else(|_| Event::default().data("Serialization error")))
-            },
-            Err(_) => Ok(Event::default().event("error").data("Internal channel error")),
-        }
+    let stream = ReceiverStream::new(rx).map(|result| match result {
+        Ok(event) => Ok::<Event, Infallible>(
+            Event::default()
+                .json_data(event)
+                .unwrap_or_else(|_| Event::default().data("Serialization error")),
+        ),
+        Err(_) => Ok::<Event, Infallible>(
+            Event::default()
+                .event("error")
+                .data("Internal channel error"),
+        ),
     });
 
-    Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::new().interval(Duration::from_secs(10)))
+    Sse::new(stream)
+        .keep_alive(axum::response::sse::KeepAlive::new().interval(Duration::from_secs(10)))
+        .into_response()
 }
 
 pub async fn handle_query(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<QueryRequest>,
 ) -> Result<Json<QueryResponse>, impl IntoResponse> {
+    if auth::require_session(&headers).is_none() {
+        return Err((StatusCode::UNAUTHORIZED, "Unauthorized".to_string()));
+    }
+
     // Non-streaming endpoint (legacy support, simplified)
     tracing::info!("Received query: '{}'", request.query);
-    
+
     let prefer_search = request.web_search_enabled || request.search_reasoning_enabled;
     let model = match resolve_model(&state, request.model.clone(), prefer_search).await {
         Ok(model) => model,
         Err(e) => return Err((StatusCode::SERVICE_UNAVAILABLE, e.to_string())),
     };
-    
+
     let search_provider = request.search_provider.filter(|s| s != "auto");
-    let rag = RAGSystem::new(state.db.clone(), state.llm_manager.clone(), model, search_provider);
-    
+    let rag = RAGSystem::new(
+        state.db.clone(),
+        state.llm_manager.clone(),
+        model,
+        search_provider,
+    );
+
     // For simple query, we don't support history yet
     match rag
         .query(
@@ -199,7 +246,12 @@ pub async fn handle_query(
 
 pub async fn get_threads(
     State(state): State<AppState>,
+    headers: HeaderMap,
 ) -> Result<Json<Vec<crate::models::Thread>>, impl IntoResponse> {
+    if auth::require_session(&headers).is_none() {
+        return Err((StatusCode::UNAUTHORIZED, "Unauthorized".to_string()));
+    }
+
     match state.db.list_threads(50).await {
         Ok(threads) => Ok(Json(threads)),
         Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {}", e))),
@@ -208,8 +260,13 @@ pub async fn get_threads(
 
 pub async fn get_thread_messages(
     State(state): State<AppState>,
+    headers: HeaderMap,
     axum::extract::Path(thread_id): axum::extract::Path<String>,
 ) -> Result<Json<Vec<crate::models::Message>>, impl IntoResponse> {
+    if auth::require_session(&headers).is_none() {
+        return Err((StatusCode::UNAUTHORIZED, "Unauthorized".to_string()));
+    }
+
     match state.db.get_thread_messages(&thread_id).await {
         Ok(messages) => Ok(Json(messages)),
         Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {}", e))),
@@ -218,31 +275,35 @@ pub async fn get_thread_messages(
 
 pub async fn get_sources(
     State(state): State<AppState>,
+    headers: HeaderMap,
 ) -> Result<Json<Vec<crate::models::Source>>, impl IntoResponse> {
+    if auth::require_session(&headers).is_none() {
+        return Err((StatusCode::UNAUTHORIZED, "Unauthorized".to_string()));
+    }
+
     match state.db.get_sources(20).await {
         Ok(sources) => Ok(Json(sources)),
         Err(e) => {
             tracing::error!("Get sources error: {}", e);
-            Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Error: {}", e),
-            ))
+            Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {}", e)))
         }
     }
 }
 
-pub async fn sync_limits(
-    State(state): State<AppState>,
-) -> impl IntoResponse {
+pub async fn sync_limits(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    if auth::require_session(&headers).is_none() {
+        return StatusCode::UNAUTHORIZED;
+    }
+
     // Sync Tavily
     if let Err(e) = WebSearch::sync_tavily_usage(&state.db).await {
         tracing::error!("Sync Tavily limits error: {}", e);
     }
-    
+
     // Sync LLM Providers (OpenRouter, Pollinations, etc.)
     if let Err(e) = state.llm_manager.refresh_llm_limits().await {
         tracing::error!("Sync LLM limits error: {}", e);
     }
-    
+
     StatusCode::OK
 }
