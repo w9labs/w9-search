@@ -613,6 +613,9 @@ body > .app-sidebar {
     cursor: pointer;
     transition: transform .12s ease, box-shadow .12s ease, border-color .12s ease;
     word-break: break-word;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
 }
 
 .thread-item:hover,
@@ -621,6 +624,43 @@ body > .app-sidebar {
     box-shadow: 1px 1px 0 var(--border-strong);
     border-color: var(--accent);
     color: var(--accent);
+}
+
+.thread-title {
+    flex: 1;
+    cursor: pointer;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.thread-actions {
+    display: flex;
+    gap: 4px;
+    opacity: 0;
+    transition: opacity 0.2s;
+}
+
+.thread-item:hover .thread-actions {
+    opacity: 1;
+}
+
+.thread-action-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 16px;
+    padding: 2px 6px;
+    color: var(--text-dim);
+    font-family: 'VT323', monospace;
+}
+
+.thread-action-btn:hover {
+    color: var(--accent);
+}
+
+.thread-action-btn.delete:hover {
+    color: var(--danger);
 }
 
 .sidebar-footer {

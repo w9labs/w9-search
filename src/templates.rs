@@ -581,9 +581,59 @@ pub async fn index(headers: HeaderMap, State(state): State<AppState>) -> Respons
                             threads.forEach(t => {
                                 const div = document.createElement('div');
                                 div.className = 'thread-item';
-                                div.textContent = t.title || 'Untitled Chat';
-                                div.dataset.id = t.id;
-                                div.onclick = () => loadThread(t.id);
+                                
+                                // Title
+                                const titleSpan = document.createElement('span');
+                                titleSpan.className = 'thread-title';
+                                titleSpan.textContent = t.title || 'Untitled Chat';
+                                titleSpan.onclick = () => loadThread(t.id);
+                                div.appendChild(titleSpan);
+                                
+                                // Actions container
+                                const actions = document.createElement('div');
+                                actions.className = 'thread-actions';
+                                
+                                // Share button
+                                const shareBtn = document.createElement('button');
+                                shareBtn.className = 'thread-action-btn';
+                                shareBtn.title = 'Share';
+                                shareBtn.innerHTML = '↗';
+                                shareBtn.onclick = async (e) => {
+                                    e.stopPropagation();
+                                    try {
+                                        const res = await fetch(`/api/threads/${t.id}/share`, { method: 'POST' });
+                                        if (res.ok) {
+                                            const data = await res.json();
+                                            const shareUrl = `${window.location.origin}/share/${data.share_id}`;
+                                            await navigator.clipboard.writeText(shareUrl);
+                                            alert('Share link copied to clipboard!');
+                                        } else {
+                                            alert('Failed to share thread');
+                                        }
+                                    } catch(e) { alert('Error sharing thread'); }
+                                };
+                                actions.appendChild(shareBtn);
+                                
+                                // Delete button
+                                const deleteBtn = document.createElement('button');
+                                deleteBtn.className = 'thread-action-btn delete';
+                                deleteBtn.title = 'Delete';
+                                deleteBtn.innerHTML = '×';
+                                deleteBtn.onclick = async (e) => {
+                                    e.stopPropagation();
+                                    if (!confirm('Delete this conversation?')) return;
+                                    try {
+                                        const res = await fetch(`/api/threads/${t.id}`, { method: 'DELETE' });
+                                        if (res.ok) {
+                                            loadThreads();
+                                        } else {
+                                            alert('Failed to delete thread');
+                                        }
+                                    } catch(e) { alert('Error deleting thread'); }
+                                };
+                                actions.appendChild(deleteBtn);
+                                
+                                div.appendChild(actions);
                                 list.appendChild(div);
                             });
                         } catch (e) { console.error('Failed to load threads', e); }

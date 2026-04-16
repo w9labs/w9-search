@@ -645,154 +645,107 @@ impl RAGSystem {
                 }
 
                 if let Some(choice) = choices.first() {
-                    if let Some(message) = choice.get("message") {
-                        // Extract content from message with proper priority handling
-                        // Priority: content field > text field > reasoning > reasoning_content
-                        let content_field = message.get("content").and_then(|c| {
-                            // Handle case where content might be an object with "text" field
-                            if let Some(text) = c.get("text").and_then(|t| t.as_str()) {
-                                Some(text)
-                            } else {
-                                c.as_str()
-                            }
-                        });
+                    // Try to get message from choice - could be nested differently
+                    let message = choice.get("message")
+                        .or_else(|| choice.get("delta"));  // delta is used in streaming
+                    
+                    if let Some(msg) = message {
+                        // Extract content from various possible locations
+                        let mut extracted = String::new();
                         
-                        // Also check for top-level "text" field in message
-                        let text_field = message.get("text").and_then(|t| t.as_str());
+                        // 1. content field (string)
+                        if let Some(c) = msg.get("content").and_then(|c| c.as_str()) {
+                            if !c.is_empty() { extracted = c.to_string(); }
+                        }
                         
-                        // Reasoning fields (for Pollinations AI with reasoning enabled)
-                        let reasoning_field = message.get("reasoning").and_then(|r| r.as_str());
-                        let reasoning_content_field = message.get("reasoning_content").and_then(|rc| rc.as_str());
-                        
-                        // Extract the best available content in priority order
-                        let extracted_content = content_field
-                            .or(text_field)
-                            .or(reasoning_field)
-                            .or(reasoning_content_field);
-                        
-                        // Log reasoning if present
-                        if let Some(reasoning) = reasoning_field.or(reasoning_content_field) {
-                            if !reasoning.is_empty() {
-                                tracing::info!(
-                                    "Received reasoning from AI (length: {} chars)",
-                                    reasoning.len()
-                                );
+                        // 2. content.text (object)
+                        if extracted.is_empty() {
+                            if let Some(c) = msg.get("content").and_then(|c| c.get("text")).and_then(|t| t.as_str()) {
+                                if !c.is_empty() { extracted = c.to_string(); }
                             }
                         }
-
-                        // Check if there's actual content
-                        if let Some(content) = extracted_content {
-                            if !content.is_empty() {
-                                tracing::info!(
-                                    "Received final answer from AI (length: {} chars)",
-                                    content.len()
-                                );
-                                final_answer = content.to_string();
-                                break;
+                        
+                        // 3. text field directly
+                        if extracted.is_empty() {
+                            if let Some(t) = msg.get("text").and_then(|t| t.as_str()) {
+                                if !t.is_empty() { extracted = t.to_string(); }
                             }
                         }
-
+                        
+                        // 4. reasoning field (Pollinations with reasoning)
+                        if extracted.is_empty() {
+                            if let Some(r) = msg.get("reasoning").and_then(|r| r.as_str()) {
+                                if !r.is_empty() { 
+                                    extracted = r.to_string();
+                                    tracing::info!("Using reasoning field as answer (len: {})", r.len());
+                                }
+                            }
+                        }
+                        
+                        // 5. reasoning_content field
+                        if extracted.is_empty() {
+                            if let Some(r) = msg.get("reasoning_content").and_then(|r| r.as_str()) {
+                                if !r.is_empty() { 
+                                    extracted = r.to_string();
+                                    tracing::info!("Using reasoning_content field as answer (len: {})", r.len());
+                                }
+                            }
+                        }
+                        
+                        // If we got content, use it
+                        if !extracted.is_empty() {
+                            final_answer = extracted;
+                            break;
+                        }
+                        
                         // Check for tool calls
-                        if let Some(tool_calls) =
-                            message.get("tool_calls").and_then(|tc| tc.as_array())
-                        {
-                            if !tool_calls.is_empty() {
-                                self.send_status(&status_sender, "Using calculation tools...")
-                                    .await;
-                                tracing::info!("AI requested {} tool calls", tool_calls.len());
-
-                                // Keep the assistant tool-call message before any tool responses.
-                                // Some providers are strict about assistant/tool alternation.
-                                messages.push(message.clone());
-
-                                // Execute tools and add responses
-                                for (idx, tool_call) in tool_calls.iter().enumerate() {
+                        if let Some(tc) = msg.get("tool_calls").and_then(|tc| tc.as_array()) {
+                            if !tc.is_empty() {
+                                self.send_status(&status_sender, "Using tools...").await;
+                                messages.push(msg.clone());
+                                
+                                for tool_call in tc.iter() {
                                     if let Some(function) = tool_call.get("function") {
-                                        let function_name = function
-                                            .get("name")
-                                            .and_then(|n| n.as_str())
-                                            .unwrap_or("");
-
-                                        let arguments_str = function
-                                            .get("arguments")
-                                            .and_then(|a| a.as_str())
-                                            .unwrap_or("{}");
-
-                                        tracing::info!(
-                                            "Tool call {}: {} with args: {}",
-                                            idx + 1,
-                                            function_name,
-                                            arguments_str
-                                        );
-
-                                        let arguments: Value = match serde_json::from_str(
-                                            arguments_str,
-                                        ) {
-                                            Ok(args) => args,
-                                            Err(e) => {
-                                                tracing::warn!("Failed to parse tool arguments: {}, using empty object", e);
-                                                json!({})
-                                            }
+                                        let name = function.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                                        let args = function.get("arguments").and_then(|a| a.as_str()).unwrap_or("{}");
+                                        
+                                        let result = match Tools::execute_tool(name, &serde_json::from_str(args).unwrap_or(json!({}))) {
+                                            Ok(r) => r,
+                                            Err(e) => format!("Error: {}", e)
                                         };
-
-                                        let tool_result = match Tools::execute_tool(
-                                            function_name,
-                                            &arguments,
-                                        ) {
-                                            Ok(result) => {
-                                                tracing::info!("Tool {} executed successfully, result length: {}", function_name, result.len());
-                                                result
-                                            }
-                                            Err(e) => {
-                                                tracing::warn!(
-                                                    "Tool {} execution error: {}",
-                                                    function_name,
-                                                    e
-                                                );
-                                                format!("Error executing {}: {}", function_name, e)
-                                            }
-                                        };
-
-                                        let tool_call_id = tool_call
-                                            .get("id")
-                                            .and_then(|id| id.as_str())
-                                            .unwrap_or("");
-
-                                        // Add tool response message
+                                        
                                         messages.push(json!({
-                                        "role": "tool",
-                                        "content": tool_result,
-                                        "tool_call_id": tool_call_id
+                                            "role": "tool",
+                                            "content": result
                                         }));
-                                    } else {
-                                        tracing::warn!(
-                                            "Tool call {} missing function field",
-                                            idx + 1
-                                        );
                                     }
                                 }
-
-                                tracing::info!(
-                                    "Preparing next iteration with {} messages",
-                                    messages.len()
-                                );
                                 max_iterations -= 1;
                                 continue;
                             }
                         }
+                        
+                        // Check finish_reason for stop
+                        if let Some(fr) = choice.get("finish_reason").and_then(|fr| fr.as_str()) {
+                            if fr == "stop" {
+                                // Try one more time to get content even if it was null
+                                if extracted.is_empty() {
+                                    // Last resort - check if there's any string field we missed
+                                    tracing::warn!("finish_reason=stop but no content found");
+                                }
+                            }
+                        }
                     } else {
-                        tracing::warn!("Choice missing message field");
+                        tracing::warn!("Choice has no message/delta field");
                     }
+                } else {
+                    tracing::warn!("No first choice in response");
                 }
             } else {
-                tracing::warn!("Provider response missing choices field");
+                tracing::warn!("No choices array in response");
             }
 
             max_iterations -= 1;
-            tracing::warn!(
-                "No valid response extracted, remaining iterations: {}",
-                max_iterations
-            );
         }
 
         if final_answer.is_empty() {
