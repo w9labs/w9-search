@@ -822,8 +822,8 @@ pub async fn index(headers: HeaderMap, State(state): State<AppState>) -> Respons
                                                 scrollToBottom();
                                             } else if (event.type === 'Error') {
                                                 answerTextDiv.innerHTML += `<div class="error">${event.data}</div>`;
-}
-                                         } catch (e) { console.warn(e); }
+                                            }
+                                        } catch (e) { console.warn(e); }
                                     }
                                 }
                             
