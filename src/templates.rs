@@ -597,7 +597,7 @@ pub async fn index(headers: HeaderMap, State(state): State<AppState>) -> Respons
                                 const shareBtn = document.createElement('button');
                                 shareBtn.className = 'thread-action-btn';
                                 shareBtn.title = 'Share';
-                                shareBtn.innerHTML = '↗';
+                                shareBtn.innerHTML = '▶';
                                 shareBtn.onclick = async (e) => {
                                     e.stopPropagation();
                                     try {
@@ -618,7 +618,7 @@ pub async fn index(headers: HeaderMap, State(state): State<AppState>) -> Respons
                                 const deleteBtn = document.createElement('button');
                                 deleteBtn.className = 'thread-action-btn delete';
                                 deleteBtn.title = 'Delete';
-                                deleteBtn.innerHTML = '×';
+                                deleteBtn.innerHTML = '■';
                                 deleteBtn.onclick = async (e) => {
                                     e.stopPropagation();
                                     if (!confirm('Delete this conversation?')) return;
