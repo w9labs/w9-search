@@ -511,6 +511,8 @@ impl RAGSystem {
                 \n\
                 CURRENT DATE: {} (use this to answer 'current', 'latest', 'today' questions)\n\
                 \n\
+                IMPORTANT: For simple factual questions (like 'who is the president of X'), answer DIRECTLY without using tools or thinking. Just provide the answer.\n\
+                \n\
                 TASK: Answer the user's query using the provided sources as your PRIMARY information source.\n\
                 \n\
                 PRIORITY RULES:\n\
@@ -524,6 +526,7 @@ impl RAGSystem {
                 - Start with direct answer\n\
                 - Cite sources using [Source N]\n\
                 - If using your own knowledge, explicitly state it\n\
+                - DO NOT use <thinking> tags - just give the answer\n\
                 \n\
                 SOURCES:\n{}",
                 current_date,
@@ -739,6 +742,21 @@ impl RAGSystem {
             }
 
             max_iterations -= 1;
+        }
+
+        // Clean up answer: remove <thinking> tags and internal reasoning
+        if !final_answer.is_empty() {
+            let cleaned = final_answer
+                .clone()
+                .split("<thinking>").last()
+                .unwrap_or(&final_answer)
+                .split("</thinking>").next()
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if !cleaned.is_empty() {
+                final_answer = cleaned;
+            }
         }
 
         if final_answer.is_empty() {
