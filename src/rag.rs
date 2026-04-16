@@ -634,38 +634,107 @@ impl RAGSystem {
                 return Err(anyhow::anyhow!("Provider API error: {}", error));
             }
 
-            let message = response_json.get("choices")
-                .and_then(|c| c.as_array())
-                .and_then(|arr| arr.first())
-                .and_then(|c| c.get("message").or(c.get("delta")));
-
-            if message.is_none() {
-                tracing::warn!("No message or delta in choices! Response: {}", resp_str.chars().take(200).collect::<String>());
-            }
-
-            if let Some(msg) = message {
-                let content = msg.get("content")
-                    .or_else(|| msg.get("text"))
-                    .and_then(|c| {
-                        if let Some(s) = c.as_str() {
-                            Some(s.to_string())
-                        } else if let Some(obj) = c.as_object() {
-                            obj.get("text").and_then(|t| t.as_str()).map(|s| s.to_string())
-                        } else {
-                            None
-                        }
-                    });
-                
-                if let Some(c) = content {
-                    if !c.is_empty() {
-                        tracing::info!("Got content: {} chars", c.len());
-                        final_answer = c;
-                        break;
-                    } else {
-                        tracing::warn!("Content is empty string!");
+            // === COMPREHENSIVE RESPONSE PARSING ===
+            let choices = match response_json.get("choices").and_then(|c| c.as_array()) {
+                Some(arr) if !arr.is_empty() => arr,
+                _ => {
+                    tracing::warn!("No valid choices in response");
+                    max_iterations -= 1;
+                    continue;
+                }
+            };
+            
+            let first_choice = &choices[0];
+            
+            // Try multiple paths to get the message content
+            let mut extracted_answer: Option<String> = None;
+            
+            // Path 1: choices[0].message.content (standard non-streaming)
+            if let Some(msg) = first_choice.get("message") {
+                if let Some(content) = msg.get("content").and_then(|c| c.as_str()) {
+                    if !content.is_empty() {
+                        tracing::info!("Found content in message.content ({} chars)", content.len());
+                        extracted_answer = Some(content.to_string());
                     }
-                } else {
-                    tracing::warn!("No content field found in message. Keys: {:?}", msg.as_object().map(|o| o.keys().collect::<Vec<_>>()));
+                }
+                // Also check message.text
+                if extracted_answer.is_none() {
+                    if let Some(text) = msg.get("text").and_then(|t| t.as_str()) {
+                        if !text.is_empty() {
+                            tracing::info!("Found content in message.text ({} chars)", text.len());
+                            extracted_answer = Some(text.to_string());
+                        }
+                    }
+                }
+                // Check reasoning_content field
+                if extracted_answer.is_none() {
+                    if let Some(reasoning) = msg.get("reasoning_content").and_then(|r| r.as_str()) {
+                        if !reasoning.is_empty() {
+                            tracing::info!("Using reasoning_content as answer ({} chars)", reasoning.len());
+                            extracted_answer = Some(reasoning.to_string());
+                        }
+                    }
+                }
+                // Check reasoning field
+                if extracted_answer.is_none() {
+                    if let Some(reasoning) = msg.get("reasoning").and_then(|r| r.as_str()) {
+                        if !reasoning.is_empty() {
+                            tracing::info!("Using reasoning field as answer ({} chars)", reasoning.len());
+                            extracted_answer = Some(reasoning.to_string());
+                        }
+                    }
+                }
+            }
+            
+            // Path 2: choices[0].delta.content (streaming-style response)
+            if extracted_answer.is_none() {
+                if let Some(delta) = first_choice.get("delta") {
+                    if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
+                        if !content.is_empty() {
+                            tracing::info!("Found content in delta.content ({} chars)", content.len());
+                            extracted_answer = Some(content.to_string());
+                        }
+                    }
+                }
+            }
+            
+            // Path 3: Check if content is an object with "text" field
+            if extracted_answer.is_none() {
+                if let Some(msg) = first_choice.get("message") {
+                    if let Some(content_obj) = msg.get("content").and_then(|c| c.as_object()) {
+                        if let Some(text) = content_obj.get("text").and_then(|t| t.as_str()) {
+                            if !text.is_empty() {
+                                tracing::info!("Found content in content.text ({} chars)", text.len());
+                                extracted_answer = Some(text.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // If we found an answer, use it
+            if let Some(answer) = extracted_answer {
+                final_answer = answer;
+                break;
+            }
+            
+            // No content found - check for tool calls
+            let has_tools = first_choice.get("message")
+                .and_then(|m| m.get("tool_calls"))
+                .and_then(|tc| tc.as_array())
+                .map(|arr| !arr.is_empty())
+                .unwrap_or(false);
+            
+            if has_tools {
+                tracing::info!("Processing tool calls...");
+            }
+            
+            // Check finish_reason
+            let finish_reason = first_choice.get("finish_reason").and_then(|f| f.as_str());
+            if let Some(fr) = finish_reason {
+                tracing::info!("Finish reason: {}", fr);
+                if fr == "stop" && extracted_answer.is_none() {
+                    tracing::warn!("Stop reason but no content found!");
                 }
             }
 
