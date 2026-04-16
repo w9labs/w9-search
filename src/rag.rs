@@ -620,161 +620,53 @@ impl RAGSystem {
                 )
                 .await?;
 
-            // DEBUG: Log full response structure
-            tracing::debug!(
-                "Response JSON keys: {:?}",
-                response_json.as_object().map(|o| o.keys().collect::<Vec<_>>())
-            );
+            let resp_str = serde_json::to_string(&response_json).unwrap_or_default();
+            tracing::info!("Provider raw response length: {}", resp_str.len());
             
-            // Try to extract message - check multiple paths
-            let msg = response_json.get("choices")
+            if resp_str.len() > 500 {
+                tracing::info!("Response preview: {}", &resp_str[..500]);
+            } else {
+                tracing::info!("Full response: {}", resp_str);
+            }
+
+            if let Some(error) = response_json.get("error") {
+                tracing::error!("Provider API error: {}", error);
+                return Err(anyhow::anyhow!("Provider API error: {}", error));
+            }
+
+            let message = response_json.get("choices")
                 .and_then(|c| c.as_array())
                 .and_then(|arr| arr.first())
-                .and_then(|c| c.get("message"))
-                .or_else(|| 
-                    response_json.get("choices")
-                    .and_then(|c| c.as_array())
-                    .and_then(|arr| arr.first())
-                    .and_then(|c| c.get("delta"))
-                );
-            
-            if let Some(m) = msg {
-                tracing::debug!("Message fields: {:?}", m.as_object().map(|o| o.keys().collect::<Vec<_>>()));
+                .and_then(|c| c.get("message").or(c.get("delta")));
+
+            if message.is_none() {
+                tracing::warn!("No message or delta in choices! Response: {}", resp_str.chars().take(200).collect::<String>());
+            }
+
+            if let Some(msg) = message {
+                let content = msg.get("content")
+                    .or_else(|| msg.get("text"))
+                    .and_then(|c| {
+                        if let Some(s) = c.as_str() {
+                            Some(s.to_string())
+                        } else if let Some(obj) = c.as_object() {
+                            obj.get("text").and_then(|t| t.as_str()).map(|s| s.to_string())
+                        } else {
+                            None
+                        }
+                    });
                 
-                // Log content if present
-                if let Some(c) = m.get("content") {
-                    tracing::debug!("Content field type: {:?}", c);
-                    if let Some(s) = c.as_str() {
-                        tracing::debug!("Content string: {}", s.chars().take(100).collect::<String>());
-                    } else if let Some(obj) = c.as_object() {
-                        tracing::debug!("Content is object with keys: {:?}", obj.keys().collect::<Vec<_>>());
-                    }
-                }
-            }
-
-            tracing::debug!(
-                "Provider response: {}",
-                serde_json::to_string_pretty(&response_json).unwrap_or_default()
-            );
-
-            // Check for error in response
-            if let Some(error) = response_json.get("error") {
-                tracing::error!(
-                    "Provider API error: {}",
-                    serde_json::to_string(error).unwrap_or_default()
-                );
-                return Err(anyhow::anyhow!(
-                    "Provider API error: {}",
-                    serde_json::to_string(error).unwrap_or_default()
-                ));
-            }
-
-            if let Some(choices) = response_json.get("choices").and_then(|c| c.as_array()) {
-                if choices.is_empty() {
-                    tracing::warn!("Provider returned empty choices array");
-                    max_iterations -= 1;
-                    continue;
-                }
-
-                if let Some(choice) = choices.first() {
-                    // Try to get message from choice - could be nested differently
-                    let message = choice.get("message")
-                        .or_else(|| choice.get("delta"));  // delta is used in streaming
-                    
-                    if let Some(msg) = message {
-                        // Extract content from various possible locations
-                        let mut extracted = String::new();
-                        
-                        // 1. content field (string)
-                        if let Some(c) = msg.get("content").and_then(|c| c.as_str()) {
-                            if !c.is_empty() { extracted = c.to_string(); }
-                        }
-                        
-                        // 2. content.text (object)
-                        if extracted.is_empty() {
-                            if let Some(c) = msg.get("content").and_then(|c| c.get("text")).and_then(|t| t.as_str()) {
-                                if !c.is_empty() { extracted = c.to_string(); }
-                            }
-                        }
-                        
-                        // 3. text field directly
-                        if extracted.is_empty() {
-                            if let Some(t) = msg.get("text").and_then(|t| t.as_str()) {
-                                if !t.is_empty() { extracted = t.to_string(); }
-                            }
-                        }
-                        
-                        // 4. reasoning field (Pollinations with reasoning)
-                        if extracted.is_empty() {
-                            if let Some(r) = msg.get("reasoning").and_then(|r| r.as_str()) {
-                                if !r.is_empty() { 
-                                    extracted = r.to_string();
-                                    tracing::info!("Using reasoning field as answer (len: {})", r.len());
-                                }
-                            }
-                        }
-                        
-                        // 5. reasoning_content field
-                        if extracted.is_empty() {
-                            if let Some(r) = msg.get("reasoning_content").and_then(|r| r.as_str()) {
-                                if !r.is_empty() { 
-                                    extracted = r.to_string();
-                                    tracing::info!("Using reasoning_content field as answer (len: {})", r.len());
-                                }
-                            }
-                        }
-                        
-                        // If we got content, use it
-                        if !extracted.is_empty() {
-                            final_answer = extracted;
-                            break;
-                        }
-                        
-                        // Check for tool calls
-                        if let Some(tc) = msg.get("tool_calls").and_then(|tc| tc.as_array()) {
-                            if !tc.is_empty() {
-                                self.send_status(&status_sender, "Using tools...").await;
-                                messages.push(msg.clone());
-                                
-                                for tool_call in tc.iter() {
-                                    if let Some(function) = tool_call.get("function") {
-                                        let name = function.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                                        let args = function.get("arguments").and_then(|a| a.as_str()).unwrap_or("{}");
-                                        
-                                        let result = match Tools::execute_tool(name, &serde_json::from_str(args).unwrap_or(json!({}))) {
-                                            Ok(r) => r,
-                                            Err(e) => format!("Error: {}", e)
-                                        };
-                                        
-                                        messages.push(json!({
-                                            "role": "tool",
-                                            "content": result
-                                        }));
-                                    }
-                                }
-                                max_iterations -= 1;
-                                continue;
-                            }
-                        }
-                        
-                        // Check finish_reason for stop
-                        if let Some(fr) = choice.get("finish_reason").and_then(|fr| fr.as_str()) {
-                            if fr == "stop" {
-                                // Try one more time to get content even if it was null
-                                if extracted.is_empty() {
-                                    // Last resort - check if there's any string field we missed
-                                    tracing::warn!("finish_reason=stop but no content found");
-                                }
-                            }
-                        }
+                if let Some(c) = content {
+                    if !c.is_empty() {
+                        tracing::info!("Got content: {} chars", c.len());
+                        final_answer = c;
+                        break;
                     } else {
-                        tracing::warn!("Choice has no message/delta field");
+                        tracing::warn!("Content is empty string!");
                     }
                 } else {
-                    tracing::warn!("No first choice in response");
+                    tracing::warn!("No content field found in message. Keys: {:?}", msg.as_object().map(|o| o.keys().collect::<Vec<_>>()));
                 }
-            } else {
-                tracing::warn!("No choices array in response");
             }
 
             max_iterations -= 1;
