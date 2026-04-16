@@ -822,9 +822,57 @@ pub async fn index(headers: HeaderMap, State(state): State<AppState>) -> Respons
                                                 scrollToBottom();
                                             } else if (event.type === 'Error') {
                                                 answerTextDiv.innerHTML += `<div class="error">${event.data}</div>`;
-                                            }
-                                        } catch (e) { console.warn(e); }
+}
+                                         } catch (e) { console.warn(e); }
                                     }
+                                }
+                            
+                            // After done: Show thinking toggle button (collapsible)
+                            thinkingDiv.innerHTML = '';
+                            thinkingDiv.style.display = 'block';
+                            thinkingDiv.style.marginBottom = '10px';
+                            
+                            // Create toggle button
+                            const thinkingToggle = document.createElement('button');
+                            thinkingToggle.className = 'thinking-toggle';
+                            thinkingToggle.textContent = '💭 Show thinking';
+                            thinkingToggle.onclick = () => {
+                                const isExpanded = thinkingToggle.textContent.includes('Show');
+                                thinkingContent.style.display = isExpanded ? 'block' : 'none';
+                                thinkingToggle.textContent = isExpanded ? '💭 Hide thinking' : '💭 Show thinking';
+                            };
+                            thinkingDiv.appendChild(thinkingToggle);
+                            
+                            // Create thinking content container (hidden by default)
+                            const thinkingContent = document.createElement('div');
+                            thinkingContent.className = 'thinking-content';
+                            thinkingContent.style.display = 'none';
+                            thinkingContent.style.padding = '10px';
+                            thinkingContent.style.marginTop = '8px';
+                            thinkingContent.style.background = 'rgba(99, 102, 241, 0.1)';
+                            thinkingContent.style.borderLeft = '3px solid var(--accent)';
+                            thinkingContent.style.fontSize = '0.85em';
+                            thinkingContent.style.color = '#888';
+                            thinkingContent.style.fontFamily = 'monospace';
+                            thinkingContent.style.maxHeight = '200px';
+                            thinkingContent.style.overflowY = 'auto';
+                            // Move the thinking content to this container
+                            const thinkingSteps = thinkingDiv.querySelectorAll('.thinking-step');
+                            thinkingSteps.forEach(step => thinkingContent.appendChild(step));
+                            thinkingDiv.appendChild(thinkingContent);
+                            
+                            // Ensure answer is prominent
+                            answerTextDiv.style.fontSize = '1.05em';
+                            answerTextDiv.style.lineHeight = '1.7';
+                            answerTextDiv.style.padding = '12px';
+                            answerTextDiv.style.background = 'var(--surface)';
+                            answerTextDiv.style.borderRadius = '8px';
+                            answerTextDiv.style.border = '1px solid var(--border)';
+
+                        } catch (e) {
+                            answerTextDiv.innerHTML += `<div class="error">Error: ${e.message}</div>`;
+                        }
+                    }
                                 }
                             }
                             
