@@ -28,12 +28,12 @@ pub async fn models(State(state): State<AppState>) -> Html<String> {
                 link rel="stylesheet" href="/static/style.css";
                 link rel="preconnect" href="https://fonts.googleapis.com";
                 link rel="preconnect" href="https://fonts.gstatic.com" crossorigin;
-                link href=(r#"https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;700&family=Space+Grotesk:wght@300;400;700&display=swap"#) rel="stylesheet";
+                link href=(r#"https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap"#) rel="stylesheet";
             }
             body {
                 div class="container" {
                     header {
-                        h1 { "W9" }
+                        h1 { "W9 Search" }
                         p class="subtitle" { "Models & Limits" }
                         nav {
                             a href="/" class="nav-link" { "← Back to Search" }
@@ -137,6 +137,26 @@ pub async fn models(State(state): State<AppState>) -> Html<String> {
                                                 (if model.is_free { "Free" } else { "Paid" })
                                             }
                                         }
+                                        @if let Some(description) = &model.description {
+                                            div class="meta-item model-description" {
+                                                span class="label" { "About:" }
+                                                span { (description) }
+                                            }
+                                        }
+                                        div class="model-badges" {
+                                            @if model.supports_native_search {
+                                                span class="badge badge--ok" { "Search" }
+                                            }
+                                            @if model.supports_reasoning {
+                                                span class="badge badge--warn" { "Reasoning" }
+                                            }
+                                            @if model.supports_tools {
+                                                span class="badge badge--warn" { "Tools" }
+                                            }
+                                            @if model.is_specialized {
+                                                span class="badge badge--err" { "Specialized" }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -175,13 +195,13 @@ pub async fn index(State(state): State<AppState>) -> Html<String> {
                 link rel="stylesheet" href="/static/style.css";
                 link rel="preconnect" href="https://fonts.googleapis.com";
                 link rel="preconnect" href="https://fonts.gstatic.com" crossorigin;
-                link href=(r#"https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;700&family=Space+Grotesk:wght@300;400;700&display=swap"#) rel="stylesheet";
+                link href=(r#"https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap"#) rel="stylesheet";
             }
             body {
                 // Sidebar
                 aside class="app-sidebar" {
                     div class="sidebar-header" {
-                        div class="logo" { "W9" }
+                        div class="logo" { "W9 SEARCH" }
                         button id="new-chat-btn" class="new-chat-btn" title="New Chat" { "+" }
                     }
                     div id="thread-list" class="thread-list" {
@@ -213,10 +233,27 @@ pub async fn index(State(state): State<AppState>) -> Html<String> {
                                 }
                             }
                             div class="control-group" {
+                                label class="toggle-switch" {
+                                    input type="checkbox" id="search-reasoning-toggle" {}
+                                    span class="slider" {}
+                                    span { "Reasoning" }
+                                }
+                            }
+                            div class="control-group" {
                                 select id="model-select" {
                                     option value="auto" { "Auto (Smart)" }
                                     @for model in &models {
-                                        option value=(model.id) { (format!("{} ({})", model.name, model.provider)) }
+                                        option value=(model.id) {
+                                            (format!(
+                                                "{} ({}){}{}{}{}",
+                                                model.name,
+                                                model.provider,
+                                                if model.supports_native_search { " [search]" } else { "" },
+                                                if model.supports_reasoning { " [reasoning]" } else { "" },
+                                                if model.supports_tools { " [tools]" } else { "" },
+                                                if model.is_specialized { " [safety]" } else { "" }
+                                            ))
+                                        }
                                     }
                                 }
                                 select id="provider-select" {
@@ -227,6 +264,9 @@ pub async fn index(State(state): State<AppState>) -> Html<String> {
                                     option value="ddg" { "DuckDuckGo" }
                                 }
                             }
+                        }
+                        p class="search-note" {
+                            "Native-search models skip local web search. The reasoning toggle expands the planner for models that need it."
                         }
                         div class="input-container" {
                             textarea id="user-input" placeholder="Type your follow-up question..." rows="1" {}
@@ -383,6 +423,7 @@ pub async fn index(State(state): State<AppState>) -> Html<String> {
                                 body: JSON.stringify({
                                     query,
                                     web_search_enabled: document.getElementById('web-search-toggle').checked,
+                                    search_reasoning_enabled: document.getElementById('search-reasoning-toggle').checked,
                                     model: document.getElementById('model-select').value,
                                     search_provider: document.getElementById('provider-select').value,
                                     thread_id: currentThreadId 

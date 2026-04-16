@@ -16,6 +16,37 @@ use crate::rag::{RAGSystem, StreamEvent};
 use crate::AppState;
 use crate::search::WebSearch;
 
+async fn resolve_model(
+    state: &AppState,
+    requested_model: Option<String>,
+    prefer_search: bool,
+) -> anyhow::Result<crate::llm::Model> {
+    let requested_model = requested_model.unwrap_or_else(|| "auto".to_string());
+
+    if requested_model == "auto" {
+        return state
+            .llm_manager
+            .pick_default_model(prefer_search)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("No models are loaded yet. Please retry."));
+    }
+
+    if let Some(model) = state.llm_manager.get_model(&requested_model).await {
+        return Ok(model);
+    }
+
+    tracing::warn!(
+        "Requested model '{}' not found; falling back to auto selection",
+        requested_model
+    );
+
+    state
+        .llm_manager
+        .pick_default_model(prefer_search)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("No models are loaded yet. Please retry."))
+}
+
 pub async fn handle_query_stream(
     State(state): State<AppState>,
     Json(request): Json<QueryRequest>,
@@ -67,53 +98,42 @@ pub async fn handle_query_stream(
         }
 
         // 4. Model Selection
-        let requested_model = request.model.clone().unwrap_or_else(|| "auto".to_string());
-        
-        let model = if requested_model == "auto" {
-            // Smart auto-selection
-            let models = state.llm_manager.get_models().await;
-            
-            // Priority list of "smart" models
-            let priority_patterns = [
-                "deepseek-r1",
-                "llama-3.3-70b",
-                "qwen-2.5-72b", 
-                "mixtral-8x22b",
-                "claude-3-opus",
-                "gpt-4"
-            ];
-            
-            let mut selected = None;
-            for pattern in priority_patterns {
-                if let Some(m) = models.iter().find(|m| m.id.to_lowercase().contains(pattern)) {
-                    selected = Some(m.id.clone());
-                    break;
-                }
+        let prefer_search = request.web_search_enabled || request.search_reasoning_enabled;
+        let model = match resolve_model(&state, request.model.clone(), prefer_search).await {
+            Ok(model) => model,
+            Err(e) => {
+                let _ = tx.send(Ok(StreamEvent::Error(e.to_string()))).await;
+                let _ = tx.send(Ok(StreamEvent::Done)).await;
+                return;
             }
-            
-            // Fallback to default if no smart model found
-            selected.unwrap_or(state.default_model.clone())
-        } else if state.llm_manager.get_model(&requested_model).await.is_some() {
-            requested_model
-        } else {
-             tracing::warn!(
-                "Requested model '{}' not found; using default '{}'",
-                requested_model,
-                state.default_model
-            );
-            state.default_model.clone()
         };
 
         let search_provider = request.search_provider
             .filter(|s| s != "auto");
 
-        tracing::info!("Using model '{}' and search provider '{:?}'", model, search_provider);
-        let _ = tx.send(Ok(StreamEvent::Status(format!("Using model: {}", model)))).await;
+        tracing::info!(
+            "Using model '{}' (search: {}, reasoning: {}, tools: {}) and search provider '{:?}'",
+            model.id,
+            model.supports_native_search,
+            model.supports_reasoning,
+            model.supports_tools,
+            search_provider
+        );
+        let _ = tx.send(Ok(StreamEvent::Status(format!("Using model: {}", model.name)))).await;
 
         let rag = RAGSystem::new(state.db.clone(), state.llm_manager.clone(), model, search_provider);
         
         // 5. Execute RAG with history
-        match rag.query(&request.query, request.web_search_enabled, history, Some(tx.clone())).await {
+        match rag
+            .query(
+                &request.query,
+                request.web_search_enabled,
+                request.search_reasoning_enabled,
+                history,
+                Some(tx.clone()),
+            )
+            .await
+        {
             Ok((answer, _)) => {
                 let _ = tx.send(Ok(StreamEvent::Answer(answer.clone()))).await;
                 // 6. Save Assistant Message
@@ -152,18 +172,26 @@ pub async fn handle_query(
     // Non-streaming endpoint (legacy support, simplified)
     tracing::info!("Received query: '{}'", request.query);
     
-    let requested_model = request.model.clone().unwrap_or_else(|| state.default_model.clone());
-    let model = if state.llm_manager.get_model(&requested_model).await.is_some() {
-        requested_model
-    } else {
-        state.default_model.clone()
+    let prefer_search = request.web_search_enabled || request.search_reasoning_enabled;
+    let model = match resolve_model(&state, request.model.clone(), prefer_search).await {
+        Ok(model) => model,
+        Err(e) => return Err((StatusCode::SERVICE_UNAVAILABLE, e.to_string())),
     };
     
     let search_provider = request.search_provider.filter(|s| s != "auto");
     let rag = RAGSystem::new(state.db.clone(), state.llm_manager.clone(), model, search_provider);
     
     // For simple query, we don't support history yet
-    match rag.query(&request.query, request.web_search_enabled, Vec::new(), None).await {
+    match rag
+        .query(
+            &request.query,
+            request.web_search_enabled,
+            request.search_reasoning_enabled,
+            Vec::new(),
+            None,
+        )
+        .await
+    {
         Ok((answer, sources)) => Ok(Json(QueryResponse { answer, sources })),
         Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {}", e))),
     }

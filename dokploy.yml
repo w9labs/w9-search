@@ -7,6 +7,7 @@ env:
   - PORT=3005
   - RUST_LOG=info
   - DATABASE_URL=sqlite:/app/data/w9_search.db
+  - SEARXNG_BASE_URL=https://searxng.w9.nu
 healthcheck:
   path: /health
   interval: 30s

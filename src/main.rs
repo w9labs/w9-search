@@ -23,8 +23,6 @@ use crate::search::WebSearch;
 pub struct AppState {
     pub db: Arc<Database>,
     pub llm_manager: Arc<LLMManager>,
-    /// Default model ID (first in models)
-    pub default_model: String,
 }
 
 #[tokio::main]
@@ -173,17 +171,9 @@ async fn run() -> anyhow::Result<()> {
         tracing::info!("Background init: Completed");
     });
     
-    // We don't display models here anymore as they are loaded in background
-    // But we still need a default model for the state.
-    // Since models aren't loaded yet, we'll use a placeholder or empty string
-    // The frontend should handle fetching models via API or handle empty state.
-    
-    let default_model = "loading...".to_string();
-
     let state = AppState {
         db,
         llm_manager,
-        default_model,
     };
 
     // Check if static directory exists

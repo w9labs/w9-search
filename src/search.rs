@@ -1,5 +1,6 @@
 use anyhow::Result;
 use scraper::{Html, Selector};
+use regex::Regex;
 use serde::Deserialize;
 use std::env;
 use crate::db::Database;
@@ -15,6 +16,119 @@ pub struct SearchResult {
 pub trait SearchProvider: Send + Sync {
     async fn search(&self, db: &Database, query: &str) -> Result<Vec<SearchResult>>;
     fn name(&self) -> &str;
+}
+
+fn normalize_whitespace(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn build_focus_terms(query_hint: Option<&str>, title_hint: Option<&str>) -> Vec<String> {
+    let mut terms = Vec::new();
+    for source in [query_hint, title_hint] {
+        if let Some(text) = source {
+            for raw in text
+                .split(|c: char| !c.is_alphanumeric())
+                .map(|s| s.trim().to_lowercase())
+            {
+                if raw.len() < 4 {
+                    continue;
+                }
+                if matches!(
+                    raw.as_str(),
+                    "the" | "and" | "with" | "from" | "that" | "this" | "what" | "when" | "where" | "which" | "into" | "about"
+                ) {
+                    continue;
+                }
+                if !terms.iter().any(|existing: &String| existing == &raw) {
+                    terms.push(raw);
+                }
+            }
+        }
+    }
+    terms
+}
+
+fn focus_text_for_extraction(text: &str, terms: &[String], max_chars: usize) -> String {
+    let normalized = normalize_whitespace(text);
+    if normalized.len() <= max_chars {
+        return normalized;
+    }
+
+    let splitter = Regex::new(r"(?<=[.!?。；;\n])\s+").unwrap();
+    let mut scored = Vec::new();
+
+    for sentence in splitter.split(&normalized) {
+        let sentence = sentence.trim();
+        if sentence.len() < 16 {
+            continue;
+        }
+
+        let lower = sentence.to_lowercase();
+        let hits = terms.iter().filter(|term| lower.contains(term.as_str())).count() as f64;
+        let length_bonus = (sentence.len().min(500) as f64) / 500.0;
+        let punctuation_bonus = if sentence.ends_with(':') { 0.15 } else { 0.0 };
+        scored.push((hits * 2.5 + length_bonus + punctuation_bonus, sentence.to_string()));
+    }
+
+    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    let mut selected = Vec::new();
+    let mut total_len = 0usize;
+    for (_, sentence) in scored {
+        let projected = total_len + sentence.len() + 1;
+        if projected > max_chars {
+            continue;
+        }
+        total_len = projected;
+        selected.push(sentence);
+        if total_len > max_chars / 2 {
+            break;
+        }
+    }
+
+    let focused = normalize_whitespace(&selected.join(" "));
+    if focused.len() < 200 {
+        normalized.chars().take(max_chars).collect()
+    } else {
+        focused
+    }
+}
+
+fn extract_meta_description(document: &Html) -> Option<String> {
+    let selectors = [
+        "meta[name='description']",
+        "meta[property='og:description']",
+        "meta[name='twitter:description']",
+    ];
+
+    for selector_str in selectors {
+        if let Ok(selector) = Selector::parse(selector_str) {
+            if let Some(element) = document.select(&selector).next() {
+                if let Some(content) = element.value().attr("content") {
+                    let normalized = normalize_whitespace(content);
+                    if !normalized.is_empty() {
+                        return Some(normalized);
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn looks_blocked(html: &str) -> bool {
+    let lower = html.to_lowercase();
+    [
+        "just a moment",
+        "checking your browser",
+        "enable javascript",
+        "access denied",
+        "captcha",
+        "cloudflare",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
 }
 
 pub struct DuckDuckGoSearch;
@@ -256,7 +370,12 @@ impl SearchProvider for SearXNGSearch {
         
         let response = client
             .get(&url)
-            .query(&[("q", query), ("format", "json")])
+            .query(&[
+                ("q", query),
+                ("format", "json"),
+                ("language", "auto"),
+                ("safesearch", "1"),
+            ])
             // Add headers to satisfy SearXNG bot detection
             .header("X-Forwarded-For", "127.0.0.1") 
             .header("User-Agent", "w9-search/1.0")
@@ -291,16 +410,19 @@ impl SearchProvider for SearXNGSearch {
 pub struct WebSearch;
 
 impl WebSearch {
+    fn searxng_base_url() -> String {
+        env::var("SEARXNG_BASE_URL")
+            .ok()
+            .filter(|url| !url.trim().is_empty())
+            .unwrap_or_else(|| "https://searxng.w9.nu".to_string())
+    }
+
     pub async fn get_provider(name: Option<&str>) -> Box<dyn SearchProvider> {
         // If a specific provider is requested, try to use it if configured
         if let Some(n) = name {
             match n.to_lowercase().as_str() {
                 "searxng" => {
-                    if let Ok(url) = env::var("SEARXNG_BASE_URL") {
-                        if !url.is_empty() {
-                            return Box::new(SearXNGSearch { base_url: url });
-                        }
-                    }
+                    return Box::new(SearXNGSearch { base_url: Self::searxng_base_url() });
                 },
                 "tavily" => {
                     if let Ok(key) = env::var("TAVILY_API_KEY") {
@@ -322,10 +444,9 @@ impl WebSearch {
         }
 
         // Auto logic (Priority: SearXNG -> Tavily -> Brave -> DDG)
-        if let Ok(url) = env::var("SEARXNG_BASE_URL") {
-            if !url.is_empty() {
-                return Box::new(SearXNGSearch { base_url: url });
-            }
+        let searxng_url = Self::searxng_base_url();
+        if !searxng_url.is_empty() {
+            return Box::new(SearXNGSearch { base_url: searxng_url });
         }
 
         if let Ok(key) = env::var("TAVILY_API_KEY") {
@@ -383,7 +504,12 @@ impl WebSearch {
         Ok(())
     }
     
-    pub async fn fetch_content(url: &str) -> Result<String> {
+    pub async fn fetch_content(
+        url: &str,
+        query_hint: Option<&str>,
+        snippet_hint: Option<&str>,
+        title_hint: Option<&str>,
+    ) -> Result<String> {
         let normalized_url = if url.starts_with("//") {
             format!("https:{}", url)
         } else if url.starts_with('/') {
@@ -398,87 +524,143 @@ impl WebSearch {
         
         let client = reqwest::Client::builder()
             .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-            .timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(20))
             .build()?;
         
-        let html = client.get(&normalized_url).send().await?.text().await?;
+        let html = client
+            .get(&normalized_url)
+            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+            .header("Accept-Language", "en-US,en;q=0.8")
+            .header("Cache-Control", "no-cache")
+            .send()
+            .await?
+            .text()
+            .await?;
+
+        if looks_blocked(&html) {
+            return Err(anyhow::anyhow!("Blocked or challenge page at {}", normalized_url));
+        }
+
         let document = Html::parse_document(&html);
-        
-        // Positive selection: Look for article-like containers
-        let main_selectors = ["article", "main", "#content", ".content", "#main", ".main", "body"];
-        let mut best_root = document.root_element();
-        
-        for selector_str in main_selectors {
-            if let Ok(selector) = Selector::parse(selector_str) {
-                if let Some(elem) = document.select(&selector).next() {
-                    best_root = elem;
-                    break;
-                }
-            }
-        }
 
-        // Extraction Heuristics
-        // We look for P tags and other text blocks.
-        // We score them: +1 for text length, -1 for link density.
-        
-        let p_selector = Selector::parse("p, h1, h2, h3, h4, h5, h6, li, blockquote, div").unwrap();
+        let terms = build_focus_terms(query_hint, title_hint);
+        let candidate_selectors = [
+            "article",
+            "main",
+            "[role='main']",
+            "[itemprop='articleBody']",
+            "#content",
+            ".content",
+            ".article-content",
+            ".entry-content",
+            ".post-content",
+            ".post-body",
+            "body",
+        ];
+
+        let block_selector = Selector::parse("p, h1, h2, h3, h4, h5, h6, li, blockquote, section, div").unwrap();
         let link_selector = Selector::parse("a").unwrap();
-        
-        let mut extracted_blocks = Vec::new();
-        
-        for element in best_root.select(&p_selector) {
-            let text = element.text().collect::<String>();
-            let text_len = text.len();
-            
-            // Skip very short blocks
-            if text_len < 30 { continue; }
-            
-            // Calculate link density
-            let mut link_text_len = 0;
-            for link in element.select(&link_selector) {
-                link_text_len += link.text().collect::<String>().len();
-            }
-            
-            let link_density = if text_len > 0 {
-                link_text_len as f64 / text_len as f64
-            } else {
-                1.0
-            };
-            
-            // Heuristic: If > 50% of the text is links, it's likely a navbar or footer list
-            if link_density > 0.5 { continue; }
-            
-            // Heuristic: Check for class names that indicate noise
-            if let Some(class_attr) = element.value().attr("class") {
-                let lower = class_attr.to_lowercase();
-                if lower.contains("menu") || lower.contains("nav") || lower.contains("footer") || lower.contains("copyright") {
-                    continue;
+        let mut best_text = String::new();
+        let mut best_score = f64::MIN;
+
+        for selector_str in candidate_selectors {
+            if let Ok(selector) = Selector::parse(selector_str) {
+                for element in document.select(&selector) {
+                    let mut blocks = Vec::new();
+                    for block in element.select(&block_selector) {
+                        let text = normalize_whitespace(&block.text().collect::<Vec<_>>().join(" "));
+                        if text.len() < 40 {
+                            continue;
+                        }
+
+                        let link_text_len: usize = block
+                            .select(&link_selector)
+                            .map(|link| link.text().collect::<Vec<_>>().join(" ").len())
+                            .sum();
+                        let link_density = if text.is_empty() {
+                            1.0
+                        } else {
+                            link_text_len as f64 / text.len() as f64
+                        };
+                        if link_density > 0.55 {
+                            continue;
+                        }
+
+                        if let Some(class_attr) = block.value().attr("class") {
+                            let lower = class_attr.to_lowercase();
+                            if lower.contains("nav")
+                                || lower.contains("menu")
+                                || lower.contains("footer")
+                                || lower.contains("header")
+                                || lower.contains("sidebar")
+                            {
+                                continue;
+                            }
+                        }
+
+                        blocks.push(text);
+                    }
+
+                    let joined = normalize_whitespace(&blocks.join("\n"));
+                    if joined.len() < 100 {
+                        continue;
+                    }
+
+                    let lower = joined.to_lowercase();
+                    let mut score = (joined.len().min(4000) as f64) / 100.0;
+                    score += terms
+                        .iter()
+                        .filter(|term| lower.contains(term.as_str()))
+                        .count() as f64
+                        * 6.0;
+                    if selector_str == "article" || selector_str == "main" {
+                        score += 8.0;
+                    }
+                    if let Some(title) = title_hint {
+                        if lower.contains(&title.to_lowercase()) {
+                            score += 4.0;
+                        }
+                    }
+
+                    if score > best_score {
+                        best_score = score;
+                        best_text = joined;
+                    }
                 }
             }
-
-            extracted_blocks.push(text.trim().to_string());
         }
 
-        // Fallback: If we got nothing, try raw text from body
-        if extracted_blocks.is_empty() {
-             let body_text = best_root.text().collect::<String>();
-             if body_text.len() > 100 {
-                 extracted_blocks.push(body_text);
-             }
+        if best_text.is_empty() {
+            if let Some(meta) = extract_meta_description(&document) {
+                best_text = meta;
+            } else {
+                best_text = document.root_element().text().collect::<Vec<_>>().join(" ");
+            }
         }
-        
-        // Join and clean
-        let mut content = extracted_blocks.join("\n\n");
-        
-        // Limit length safely
-        if content.len() > 15000 {
-            let mut limit = 15000;
+
+        let mut content = focus_text_for_extraction(&best_text, &terms, 12_000);
+        if content.len() < 180 {
+            if let Some(snippet) = snippet_hint {
+                let snippet = normalize_whitespace(snippet);
+                if !snippet.is_empty() {
+                    content = match title_hint {
+                        Some(title) if !title.trim().is_empty() => {
+                            format!("{}\n\n{}", title.trim(), snippet)
+                        }
+                        _ => snippet,
+                    };
+                }
+            }
+        }
+
+        if content.len() > 15_000 {
+            let mut limit = 15_000;
             while !content.is_char_boundary(limit) {
                 limit -= 1;
             }
             content.truncate(limit);
         }
-        
+
         Ok(content)
     }
 }

@@ -1,6 +1,6 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -55,6 +55,11 @@ pub struct Model {
     pub provider: ProviderType,
     pub context_length: Option<i64>,
     pub is_free: bool,
+    pub description: Option<String>,
+    pub supports_tools: bool,
+    pub supports_reasoning: bool,
+    pub supports_native_search: bool,
+    pub is_specialized: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -124,9 +129,67 @@ struct CohereModel {
 #[derive(Deserialize)]
 struct PollinationsModel {
     name: String,
+    aliases: Option<Vec<String>>,
     description: Option<String>,
     #[serde(rename = "context_window")]
     context_window: Option<i64>,
+    tools: Option<bool>,
+    reasoning: Option<bool>,
+    is_specialized: Option<bool>,
+}
+
+const POLLINATIONS_ALLOWED_MODELS: &[&str] = &[
+    "nova-fast",
+    "gemini-search",
+    "perplexity-fast",
+    "qwen-safety",
+];
+
+const SEARCH_PRIORITY: &[&str] = &[
+    "perplexity-fast",
+    "gemini-search",
+    "sonar",
+    "search",
+];
+
+const GENERAL_PRIORITY: &[&str] = &[
+    "deepseek-r1",
+    "claude",
+    "gpt-4",
+    "qwen",
+    "gemini",
+    "nova-fast",
+    "perplexity-fast",
+];
+
+fn infer_native_search(id: &str, name: &str, description: Option<&str>) -> bool {
+    let haystack = format!(
+        "{} {} {}",
+        id.to_lowercase(),
+        name.to_lowercase(),
+        description.unwrap_or_default().to_lowercase()
+    );
+
+    haystack.contains("search") || haystack.contains("sonar") || haystack.contains("web search")
+}
+
+fn infer_reasoning(id: &str, name: &str, description: Option<&str>) -> bool {
+    let haystack = format!(
+        "{} {} {}",
+        id.to_lowercase(),
+        name.to_lowercase(),
+        description.unwrap_or_default().to_lowercase()
+    );
+
+    haystack.contains("reasoning") || haystack.contains("think") || haystack.contains("r1")
+}
+
+fn infer_specialized(description: Option<&str>, is_specialized: bool) -> bool {
+    is_specialized
+        || description
+            .unwrap_or_default()
+            .to_lowercase()
+            .contains("moderation")
 }
 
 pub struct LLMManager {
@@ -211,13 +274,13 @@ impl LLMManager {
         }
 
         // 5. Pollinations
-        if let Some(key) = self.api_keys.get(&ProviderType::Pollinations) {
-            tracing::info!("Fetching Pollinations models...");
-            match self.fetch_pollinations_models(&client, key).await {
-                Ok(mut models) => all_models.append(&mut models),
-                Err(e) => tracing::error!("Failed to fetch Pollinations models: {}", e),
-            }
+        tracing::info!("Fetching Pollinations models...");
+        match self.fetch_pollinations_models(&client).await {
+            Ok(mut models) => all_models.append(&mut models),
+            Err(e) => tracing::error!("Failed to fetch Pollinations models: {}", e),
+        }
 
+        if let Some(key) = self.api_keys.get(&ProviderType::Pollinations) {
             if let Err(e) = self.fetch_pollinations_limits(&client, key).await {
                 tracing::warn!("Failed to fetch Pollinations limits: {}", e);
             }
@@ -322,12 +385,24 @@ impl LLMManager {
                     is_free
                 }
             })
-            .map(|m| Model {
-                id: m.id,
-                name: m.name,
-                provider: ProviderType::OpenRouter,
-                context_length: m.context_length,
-                is_free: true,
+            .map(|m| {
+                let id = m.id;
+                let name = m.name;
+                let supports_reasoning = infer_reasoning(&id, &name, None);
+                let supports_native_search = infer_native_search(&id, &name, None);
+
+                Model {
+                    id,
+                    name,
+                    provider: ProviderType::OpenRouter,
+                    context_length: m.context_length,
+                    is_free: true,
+                    description: None,
+                    supports_tools: true,
+                    supports_reasoning,
+                    supports_native_search,
+                    is_specialized: false,
+                }
             })
             .collect();
         
@@ -343,12 +418,24 @@ impl LLMManager {
             .await?;
 
         let models = resp.data.into_iter()
-            .map(|m| Model {
-                id: m.id.clone(),
-                name: m.id,
-                provider: ProviderType::Groq,
-                context_length: m.context_window,
-                is_free: false,
+            .map(|m| {
+                let id = m.id;
+                let name = id.clone();
+                let supports_reasoning = infer_reasoning(&id, &name, None);
+                let supports_native_search = infer_native_search(&id, &name, None);
+
+                Model {
+                    id,
+                    name,
+                    provider: ProviderType::Groq,
+                    context_length: m.context_window,
+                    is_free: false,
+                    description: None,
+                    supports_tools: true,
+                    supports_reasoning,
+                    supports_native_search,
+                    is_specialized: false,
+                }
             })
             .collect();
         
@@ -364,12 +451,24 @@ impl LLMManager {
             .await?;
 
         let models = resp.data.into_iter()
-            .map(|m| Model {
-                id: m.id.clone(),
-                name: m.id,
-                provider: ProviderType::Cerebras,
-                context_length: m.limits.and_then(|l| l.max_context_length),
-                is_free: false,
+            .map(|m| {
+                let id = m.id;
+                let name = id.clone();
+                let supports_reasoning = infer_reasoning(&id, &name, None);
+                let supports_native_search = infer_native_search(&id, &name, None);
+
+                Model {
+                    id,
+                    name,
+                    provider: ProviderType::Cerebras,
+                    context_length: m.limits.and_then(|l| l.max_context_length),
+                    is_free: false,
+                    description: None,
+                    supports_tools: true,
+                    supports_reasoning,
+                    supports_native_search,
+                    is_specialized: false,
+                }
             })
             .collect();
         
@@ -386,19 +485,31 @@ impl LLMManager {
             .await?;
 
         let models = resp.models.into_iter()
-            .map(|m| Model {
-                id: m.name.clone(),
-                name: m.name,
-                provider: ProviderType::Cohere,
-                context_length: m.context_length.map(|l| l as i64),
-                is_free: false,
+            .map(|m| {
+                let id = m.name;
+                let name = id.clone();
+                let supports_reasoning = infer_reasoning(&id, &name, None);
+                let supports_native_search = infer_native_search(&id, &name, None);
+
+                Model {
+                    id,
+                    name,
+                    provider: ProviderType::Cohere,
+                    context_length: m.context_length.map(|l| l as i64),
+                    is_free: false,
+                    description: None,
+                    supports_tools: false,
+                    supports_reasoning,
+                    supports_native_search,
+                    is_specialized: false,
+                }
             })
             .collect();
         
         Ok(models)
     }
 
-    async fn fetch_pollinations_models(&self, client: &reqwest::Client, _key: &str) -> Result<Vec<Model>> {
+    async fn fetch_pollinations_models(&self, client: &reqwest::Client) -> Result<Vec<Model>> {
         // Fetch from gen.pollinations.ai/text/models for metadata
         let resp: Vec<PollinationsModel> = client.get("https://gen.pollinations.ai/text/models")
             .send()
@@ -406,13 +517,43 @@ impl LLMManager {
             .json()
             .await?;
 
+        let allowed: HashSet<&'static str> = POLLINATIONS_ALLOWED_MODELS.iter().copied().collect();
+
         let models = resp.into_iter()
-            .map(|m| Model {
-                id: m.name.clone(),
-                name: m.name,
-                provider: ProviderType::Pollinations,
-                context_length: m.context_window.or(Some(16000)),
-                is_free: true, 
+            .filter(|m| {
+                allowed.contains(m.name.as_str())
+                    || m.aliases
+                        .as_ref()
+                        .map(|aliases| aliases.iter().any(|alias| allowed.contains(alias.as_str())))
+                        .unwrap_or(false)
+            })
+            .map(|m| {
+                let id = m.name;
+                let name = id.clone();
+                let description = m.description.clone();
+                let description_lc = description.as_deref().unwrap_or_default().to_lowercase();
+                let search_hint = infer_native_search(&id, &name, description.as_deref())
+                    || m.aliases
+                        .as_ref()
+                        .map(|aliases| aliases.iter().any(|alias| alias.to_lowercase().contains("search") || alias.to_lowercase().contains("sonar")))
+                        .unwrap_or(false);
+                let supports_reasoning = m.reasoning.unwrap_or(false)
+                    || description_lc.contains("reasoning")
+                    || infer_reasoning(&id, &name, description.as_deref());
+                let is_specialized = infer_specialized(description.as_deref(), m.is_specialized.unwrap_or(false));
+
+                Model {
+                    id,
+                    name,
+                    provider: ProviderType::Pollinations,
+                    context_length: m.context_window.or(Some(16000)),
+                    is_free: true,
+                    description,
+                    supports_tools: m.tools.unwrap_or(false),
+                    supports_reasoning,
+                    supports_native_search: search_hint,
+                    is_specialized,
+                }
             })
             .collect();
         
@@ -450,12 +591,63 @@ impl LLMManager {
     pub async fn get_model(&self, id: &str) -> Option<Model> {
         self.models.read().await.iter().find(|m| m.id == id).cloned()
     }
+
+    pub async fn pick_default_model(&self, prefer_search: bool) -> Option<Model> {
+        let models = self.get_models().await;
+        if models.is_empty() {
+            return None;
+        }
+
+        let mut candidates: Vec<Model> = models
+            .into_iter()
+            .filter(|m| !m.is_specialized)
+            .collect();
+
+        if candidates.is_empty() {
+            candidates = self.get_models().await;
+        }
+
+        let priority_list = if prefer_search {
+            SEARCH_PRIORITY
+        } else {
+            GENERAL_PRIORITY
+        };
+
+        for needle in priority_list {
+            if let Some(model) = candidates.iter().find(|m| {
+                let id = m.id.to_lowercase();
+                let name = m.name.to_lowercase();
+                let description = m.description.as_deref().unwrap_or_default().to_lowercase();
+                id.contains(needle) || name.contains(needle) || description.contains(needle)
+            }) {
+                return Some(model.clone());
+            }
+        }
+
+        if prefer_search {
+            if let Some(model) = candidates.iter().find(|m| m.supports_native_search) {
+                return Some(model.clone());
+            }
+        }
+
+        candidates
+            .iter()
+            .find(|m| m.is_free)
+            .cloned()
+            .or_else(|| candidates.first().cloned())
+    }
     
     pub async fn check_rate_limit(&self, provider: ProviderType) -> Result<bool> {
         self.db.check_rate_limit(&provider).await
     }
 
-    pub async fn chat_completion(&self, model_id: &str, messages: Vec<serde_json::Value>, tools: Option<Vec<serde_json::Value>>) -> Result<serde_json::Value> {
+    pub async fn chat_completion(
+        &self,
+        model_id: &str,
+        messages: Vec<serde_json::Value>,
+        tools: Option<Vec<serde_json::Value>>,
+        reasoning_enabled: bool,
+    ) -> Result<serde_json::Value> {
         let model = self.get_model(model_id).await
             .ok_or_else(|| anyhow::anyhow!("Model {} not found", model_id))?;
         
@@ -468,12 +660,14 @@ impl LLMManager {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(120))
             .build()?;
-            
-        let key = self.api_keys.get(&provider)
-            .ok_or_else(|| anyhow::anyhow!("API key not found for provider {}", provider))?;
+
+        let api_key = self.api_keys.get(&provider).cloned();
 
         match provider {
             ProviderType::OpenRouter => {
+                let key = api_key
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("API key not found for provider {}", provider))?;
                 let request = serde_json::json!({
                     "model": model_id,
                     "messages": messages,
@@ -498,6 +692,9 @@ impl LLMManager {
                 Ok(resp.json().await?)
             },
             ProviderType::Groq => {
+                let key = api_key
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("API key not found for provider {}", provider))?;
                 let request = serde_json::json!({
                     "model": model_id,
                     "messages": messages,
@@ -531,6 +728,9 @@ impl LLMManager {
                 Ok(resp.json().await?)
             },
             ProviderType::Cerebras => {
+                let key = api_key
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("API key not found for provider {}", provider))?;
                 let request = serde_json::json!({
                     "model": model_id,
                     "messages": messages,
@@ -564,6 +764,9 @@ impl LLMManager {
                 Ok(resp.json().await?)
             },
             ProviderType::Cohere => {
+                let key = api_key
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("API key not found for provider {}", provider))?;
                 let last_message = messages.last()
                     .and_then(|m| m.get("content"))
                     .and_then(|c| c.as_str())
@@ -631,18 +834,32 @@ impl LLMManager {
                 }))
             },
             ProviderType::Pollinations => {
-                let request = serde_json::json!({
+                let mut request = serde_json::json!({
                     "model": model_id,
                     "messages": messages,
-                    "tools": tools
                 });
-                
-                let resp = client.post("https://gen.pollinations.ai/v1/chat/completions")
-                    .header("Authorization", format!("Bearer {}", key))
+
+                if let Some(tools) = tools.filter(|_| model.supports_tools) {
+                    request["tools"] = serde_json::Value::Array(tools);
+                }
+
+                if reasoning_enabled && model.supports_reasoning {
+                    request["reasoning"] = serde_json::json!({
+                        "type": "enabled",
+                        "budget_tokens": 2048
+                    });
+                    request["reasoning_effort"] = serde_json::json!("medium");
+                }
+
+                let mut req = client.post("https://gen.pollinations.ai/v1/chat/completions")
                     .header("Content-Type", "application/json")
-                    .json(&request)
-                    .send()
-                    .await?;
+                    .json(&request);
+
+                if let Some(key) = api_key.as_ref() {
+                    req = req.header("Authorization", format!("Bearer {}", key));
+                }
+
+                let resp = req.send().await?;
 
                 if !resp.status().is_success() {
                     let text = resp.text().await?;

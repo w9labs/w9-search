@@ -4,11 +4,12 @@ A web application built with the **MASH** stack (Maud + Axum + SQLx + HTMX) that
 
 ## Features
 
-- 🤖 AI-powered answers using OpenRouter (DeepSeek R1T2 Chimera)
-- 🔍 Web search integration with toggle on/off
-- 📚 RAG system that retrieves and uses web sources
+- 🤖 AI-powered answers using OpenRouter plus the four allowed Pollinations models
+- 🔍 Hosted SearXNG research path with agentic fallback for models without native search
+- 🧠 Optional reasoning mode for deeper search planning
+- 📚 RAG system that retrieves and uses web sources when the selected model needs them
 - 💾 SQLite database for storing sources
-- 🎨 Minimalist but abnormal design aesthetic
+- 🎨 Shared W9 voxel-style UI with mobile-friendly layout
 
 ## Tech Stack
 
@@ -27,9 +28,10 @@ A web application built with the **MASH** stack (Maud + Axum + SQLx + HTMX) that
 cp .env.example .env
 ```
 
-3. Add your OpenRouter API key to `.env`:
+3. Add your API keys to `.env` (OpenRouter is required for non-Pollinations models; hosted SearXNG is the default):
 ```
 OPENROUTER_API_KEY=your_key_here
+SEARXNG_BASE_URL=https://searxng.w9.nu
 ```
 
 4. Build and run:
@@ -42,7 +44,7 @@ cargo run
 ## Usage
 
 1. Enter your query in the text area
-2. Toggle "WebSearch" on/off to enable/disable web search
+2. Toggle "Web Search" and optional "Reasoning" to control research depth
 3. Click "Query" to get AI-powered answers with source citations
 4. Sources are automatically stored in the database for future queries
 

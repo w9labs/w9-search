@@ -11,20 +11,20 @@ services:
     environment:
       - PORT=${PORT:-3005}
       - DATABASE_URL=sqlite:/app/data/w9_search.db
-      - SEARXNG_BASE_URL=http://searxng:8080
+      - SEARXNG_BASE_URL=${SEARXNG_BASE_URL:-https://searxng.w9.nu}
     env_file:
       - .env
     volumes:
       - ./data:/app/data
     networks:
       - w9-network
-    depends_on:
-      - searxng
     dns:
       - 8.8.8.8
       - 1.1.1.1
 
   searxng:
+    profiles:
+      - local-search
     image: searxng/searxng:latest
     restart: always
     networks:
@@ -35,7 +35,7 @@ services:
     volumes:
       - ./searxng:/etc/searxng:rw
     environment:
-      - BASE_URL=${SEARXNG_BASE_URL:-https://search.example.com/}
+      - BASE_URL=${SEARXNG_BASE_URL:-https://searxng.w9.nu/}
       - INSTANCE_NAME=w9-searxng
       - SEARXNG_SECRET=${SEARXNG_SECRET}
     labels:

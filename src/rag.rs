@@ -11,7 +11,7 @@ use tokio::sync::mpsc::Sender;
 pub struct RAGSystem {
     db: Arc<Database>,
     llm_manager: Arc<LLMManager>,
-    model: String,
+    model: crate::llm::Model,
     search_provider: Option<String>,
 }
 
@@ -26,7 +26,12 @@ pub enum StreamEvent {
 }
 
 impl RAGSystem {
-    pub fn new(db: Arc<Database>, llm_manager: Arc<LLMManager>, model: String, search_provider: Option<String>) -> Self {
+    pub fn new(
+        db: Arc<Database>,
+        llm_manager: Arc<LLMManager>,
+        model: crate::llm::Model,
+        search_provider: Option<String>,
+    ) -> Self {
         Self {
             db,
             llm_manager,
@@ -42,20 +47,29 @@ impl RAGSystem {
     }
 
     /// Ask the LLM to plan the research steps
-    async fn plan_search(&self, query: &str) -> Result<Vec<String>> {
+    async fn plan_search(&self, query: &str, reasoning_enabled: bool) -> Result<Vec<String>> {
         tracing::info!("Planning search for query: {}", query);
         
-        let system_prompt = "You are a simplified research planner. \
-        Given a user query, generate a list of 1-3 specific search queries that would help answer it. \
-        Return ONLY a JSON object with a 'queries' key containing the list of strings. \
-        Example: {\"queries\": [\"current president of US\", \"US president term length\"]}";
+        let system_prompt = if reasoning_enabled {
+            "You are a thorough research planner. Given a user query, generate 2-5 complementary search queries that would help answer it well. \
+            Include direct factual queries, recent-context queries, and one query that checks for counterexamples or edge cases when useful. \
+            Return ONLY a JSON object with a 'queries' key containing the list of strings. \
+            Example: {\"queries\": [\"current president of US\", \"US president term length\"]}"
+        } else {
+            "You are a simplified research planner. Given a user query, generate a list of 1-3 specific search queries that would help answer it. \
+            Return ONLY a JSON object with a 'queries' key containing the list of strings. \
+            Example: {\"queries\": [\"current president of US\", \"US president term length\"]}"
+        };
 
         let messages = vec![
             json!({ "role": "system", "content": system_prompt }),
             json!({ "role": "user", "content": query })
         ];
 
-        let json_resp = self.llm_manager.chat_completion(&self.model, messages, None).await?;
+        let json_resp = self
+            .llm_manager
+            .chat_completion(&self.model.id, messages, None, reasoning_enabled && self.model.supports_reasoning)
+            .await?;
         
         // Extract content from choice
         let content = json_resp["choices"][0]["message"]["content"]
@@ -128,105 +142,137 @@ impl RAGSystem {
     }
 
     pub async fn query(
-        &self, 
-        user_query: &str, 
+        &self,
+        user_query: &str,
         web_search_enabled: bool,
+        search_reasoning_enabled: bool,
         history: Vec<crate::models::Message>,
-        status_sender: Option<Sender<Result<StreamEvent, anyhow::Error>>>
+        status_sender: Option<Sender<Result<StreamEvent, anyhow::Error>>>,
     ) -> Result<(String, Vec<crate::models::Source>)> {
-        tracing::info!("Starting RAG query: '{}' (web_search: {}, history: {})", user_query, web_search_enabled, history.len());
+        tracing::info!(
+            "Starting RAG query: '{}' (web_search: {}, reasoning: {}, history: {})",
+            user_query,
+            web_search_enabled,
+            search_reasoning_enabled,
+            history.len()
+        );
         self.send_status(&status_sender, "Initializing search...").await;
-        
+
         let mut context_sources = Vec::new();
-        
-        // Step 1: Web search if enabled
-        if web_search_enabled {
+        let native_search = web_search_enabled && self.model.supports_native_search;
+        let agentic_search = web_search_enabled && !native_search;
+
+        // Step 1: External web search when the chosen model cannot search on its own.
+        if agentic_search {
             self.send_status(&status_sender, "Planning research strategy...").await;
-            
-            // Get search plan
-            let search_queries = match self.plan_search(user_query).await {
+
+            let search_queries = match self.plan_search(user_query, search_reasoning_enabled).await {
                 Ok(queries) => queries,
                 Err(e) => {
                     tracing::warn!("Planning failed: {}, falling back to single query", e);
                     vec![Self::enhance_query_with_temporal_context(user_query)]
                 }
             };
-            
-            self.send_status(&status_sender, format!("Identified {} search queries", search_queries.len())).await;
 
-            // Execute searches
+            self.send_status(
+                &status_sender,
+                format!("Identified {} search queries", search_queries.len()),
+            )
+            .await;
+
             let mut all_results = Vec::new();
             let mut seen_urls = HashSet::new();
-            
+
             for query in search_queries {
                 self.send_status(&status_sender, format!("Searching: {}", query)).await;
                 tracing::info!("Executing search step: {}", query);
                 if let Ok(results) = WebSearch::search(&self.db, &query, self.search_provider.as_deref()).await {
                     for result in results {
                         if seen_urls.insert(result.url.clone()) {
-                            all_results.push(result);
+                            all_results.push((query.clone(), result));
                         }
                     }
                 }
             }
-            
-            self.send_status(&status_sender, format!("Found {} potential sources. Reading content...", all_results.len())).await;
-            
-            // Limit and fetch content
-            // We'll take top 5 unique results across all queries
-            for (idx, result) in all_results.iter().take(5).enumerate() {
+
+            let fetch_limit = if search_reasoning_enabled { 7 } else { 5 };
+            self.send_status(
+                &status_sender,
+                format!("Found {} potential sources. Reading content...", all_results.len()),
+            )
+            .await;
+
+            for (idx, (query_hint, result)) in all_results.iter().take(fetch_limit).enumerate() {
                 self.send_status(&status_sender, format!("Reading: {}", result.title)).await;
                 tracing::info!("Fetching content from result {}: {}", idx + 1, result.url);
-                match WebSearch::fetch_content(&result.url).await {
-                    Ok(content) => {
-                        tracing::info!("Fetched {} bytes from {}", content.len(), result.url);
-                        match self.db.insert_source(
-                            &result.url,
-                            &result.title,
-                            &content,
-                        ).await {
-                            Ok(id) => {
-                                tracing::info!("Stored source {} in database", id);
-                                let source = crate::models::Source {
-                                    id,
-                                    url: result.url.clone(),
-                                    title: result.title.clone(),
-                                    content,
-                                    created_at: chrono::Utc::now(),
-                                };
-                                
-                                if let Some(tx) = &status_sender {
-                                    let _ = tx.send(Ok(StreamEvent::Source(source.clone()))).await;
-                                }
-                                
-                                context_sources.push(source);
-                            },
-                            Err(e) => {
-                                tracing::warn!("Failed to store source {}: {}", result.url, e);
-                            }
+
+                let content = match WebSearch::fetch_content(
+                    &result.url,
+                    Some(query_hint.as_str()),
+                    Some(result.snippet.as_str()),
+                    Some(result.title.as_str()),
+                )
+                .await
+                {
+                    Ok(content) => content,
+                    Err(e) => {
+                        tracing::warn!("Failed to fetch {}: {}. Falling back to snippet.", result.url, e);
+                        if result.snippet.trim().is_empty() {
+                            continue;
                         }
+                        result.snippet.clone()
+                    }
+                };
+
+                tracing::info!("Fetched {} bytes from {}", content.len(), result.url);
+                match self.db.insert_source(&result.url, &result.title, &content).await {
+                    Ok(id) => {
+                        tracing::info!("Stored source {} in database", id);
+                        let source = crate::models::Source {
+                            id,
+                            url: result.url.clone(),
+                            title: result.title.clone(),
+                            content,
+                            created_at: chrono::Utc::now(),
+                        };
+
+                        if let Some(tx) = &status_sender {
+                            let _ = tx.send(Ok(StreamEvent::Source(source.clone()))).await;
+                        }
+
+                        context_sources.push(source);
                     }
                     Err(e) => {
-                        tracing::warn!("Failed to fetch {}: {}", result.url, e);
+                        tracing::warn!("Failed to store source {}: {}", result.url, e);
                     }
                 }
             }
+        } else if native_search {
+            self.send_status(
+                &status_sender,
+                "Using a native-search model; skipping local web search.",
+            )
+            .await;
         }
-        
+
         // Step 2: Retrieve relevant sources from database (always check DB too)
         self.send_status(&status_sender, "Checking internal knowledge base...").await;
         tracing::info!("Searching database for relevant sources...");
-        let db_sources = match self.db.search_sources(user_query, 3).await {
+        let db_sources = match self
+            .db
+            .search_sources(user_query, if search_reasoning_enabled { 5 } else { 3 })
+            .await
+        {
             Ok(sources) => {
                 tracing::info!("Found {} relevant sources in database", sources.len());
                 sources
-            },
+            }
             Err(e) => {
                 tracing::warn!("Database search failed: {}, continuing without DB sources", e);
                 Vec::new()
             }
         };
-        
+
         // Merge and deduplicate
         let mut seen_ids = HashSet::new();
         for s in &context_sources {
@@ -237,29 +283,34 @@ impl RAGSystem {
                 context_sources.push(s);
             }
         }
-        
+
         // Step 3: Build context
         self.send_status(&status_sender, "Synthesizing answer...").await;
         let context = if context_sources.is_empty() {
             "No relevant sources found.".to_string()
         } else {
-            context_sources.iter()
+            context_sources
+                .iter()
                 .enumerate()
                 .map(|(i, s)| {
-                    format!("[Source {}]\nTitle: {}\nURL: {}\nContent: {}\n", 
-                        i + 1, s.title, s.url, 
-                        s.content.chars().take(2000).collect::<String>())
+                    format!(
+                        "[Source {}]\nTitle: {}\nURL: {}\nContent: {}\n",
+                        i + 1,
+                        s.title,
+                        s.url,
+                        s.content.chars().take(2000).collect::<String>()
+                    )
                 })
                 .collect::<Vec<_>>()
                 .join("\n---\n\n")
         };
-        
-        // Step 4: Query AI with RAG context
-        let system_prompt = if web_search_enabled {
+
+        // Step 4: Query AI with the appropriate prompt style.
+        let system_prompt = if agentic_search {
             format!(
                 "You are an advanced AI assistant with research capabilities.\n\
                 \n\
-                TASK: Answer the user's query using ONLY the provided sources. \n\
+                TASK: Answer the user's query using ONLY the provided sources.\n\
                 \n\
                 GUIDELINES:\n\
                 1. CITATIONS: Use [Source N] to cite information. Every fact must be cited.\n\
@@ -271,6 +322,20 @@ impl RAGSystem {
                 chrono::Utc::now().format("%Y-%m-%d"),
                 context
             )
+        } else if native_search {
+            if context_sources.is_empty() {
+                "You are a helpful AI assistant with native web search capability. Answer the user's question directly and clearly. If you use your own search, keep the response grounded and current.".to_string()
+            } else {
+                format!(
+                    "You are a helpful AI assistant with native web search capability.\n\
+                    \n\
+                    Use the provided sources when relevant, and use your built-in search for anything missing.\n\
+                    If you cite the provided sources, use [Source N].\n\
+                    \n\
+                    SOURCES:\n{}",
+                    context
+                )
+            }
         } else {
             format!(
                 "You are a helpful AI assistant with access to stored knowledge.\n\
@@ -286,14 +351,12 @@ impl RAGSystem {
                 context
             )
         };
-        
-        let mut messages: Vec<Value> = vec![
-            json!({
-                "role": "system",
-                "content": system_prompt
-            })
-        ];
-        
+
+        let mut messages: Vec<Value> = vec![json!({
+            "role": "system",
+            "content": system_prompt
+        })];
+
         // Append history (limit to last 6 messages to save context)
         for msg in history.iter().rev().take(6).rev() {
             messages.push(json!({
@@ -301,28 +364,42 @@ impl RAGSystem {
                 "content": msg.content
             }));
         }
-        
+
         messages.push(json!({
             "role": "user",
             "content": user_query
         }));
-        
-        // Get tools definition
-        let tools = Tools::get_tools_definition();
-        tracing::info!("Starting AI query with {} tools available", tools.len());
-        
+
+        let tools = if self.model.supports_tools {
+            Some(Tools::get_tools_definition())
+        } else {
+            None
+        };
+        tracing::info!(
+            "Starting AI query with {} tools available",
+            tools.as_ref().map(|t| t.len()).unwrap_or(0)
+        );
+
         // Handle tool calling loop (max 3 iterations)
         let mut max_iterations = 3;
         let mut final_answer = String::new();
-        
+
         while max_iterations > 0 {
-            tracing::info!("AI query iteration {} (remaining: {})", 4 - max_iterations, max_iterations - 1);
-            
-            let response_json = self.llm_manager.chat_completion(
-                &self.model, 
-                messages.clone(), 
-                Some(tools.clone())
-            ).await?;
+            tracing::info!(
+                "AI query iteration {} (remaining: {})",
+                4 - max_iterations,
+                max_iterations - 1
+            );
+
+            let response_json = self
+                .llm_manager
+                .chat_completion(
+                    &self.model.id,
+                    messages.clone(),
+                    tools.clone(),
+                    search_reasoning_enabled && self.model.supports_reasoning,
+                )
+                .await?;
             
             tracing::debug!("Provider response: {}", serde_json::to_string_pretty(&response_json).unwrap_or_default());
             
