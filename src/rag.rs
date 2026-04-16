@@ -620,6 +620,38 @@ impl RAGSystem {
                 )
                 .await?;
 
+            // DEBUG: Log full response structure
+            tracing::debug!(
+                "Response JSON keys: {:?}",
+                response_json.as_object().map(|o| o.keys().collect::<Vec<_>>())
+            );
+            
+            // Try to extract message - check multiple paths
+            let msg = response_json.get("choices")
+                .and_then(|c| c.as_array())
+                .and_then(|arr| arr.first())
+                .and_then(|c| c.get("message"))
+                .or_else(|| 
+                    response_json.get("choices")
+                    .and_then(|c| c.as_array())
+                    .and_then(|arr| arr.first())
+                    .and_then(|c| c.get("delta"))
+                );
+            
+            if let Some(m) = msg {
+                tracing::debug!("Message fields: {:?}", m.as_object().map(|o| o.keys().collect::<Vec<_>>()));
+                
+                // Log content if present
+                if let Some(c) = m.get("content") {
+                    tracing::debug!("Content field type: {:?}", c);
+                    if let Some(s) = c.as_str() {
+                        tracing::debug!("Content string: {}", s.chars().take(100).collect::<String>());
+                    } else if let Some(obj) = c.as_object() {
+                        tracing::debug!("Content is object with keys: {:?}", obj.keys().collect::<Vec<_>>());
+                    }
+                }
+            }
+
             tracing::debug!(
                 "Provider response: {}",
                 serde_json::to_string_pretty(&response_json).unwrap_or_default()
