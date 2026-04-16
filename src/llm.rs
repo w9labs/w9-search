@@ -154,7 +154,11 @@ const POLLINATIONS_ALLOWED_MODELS: &[&str] = &[
     "nova-fast",
     "gemini-search",
     "perplexity-fast",
-    "qwen-safety",
+    // "qwen-safety" - Removed: This is a content safety/moderation model, not a general assistant
+    // It returns "Safety: Safe" instead of answering questions
+    "deepseek",
+    "qwen-large",
+    "grok-large",
 ];
 
 const SEARCH_PRIORITY: &[&str] = &["perplexity-fast", "gemini-search", "sonar", "search"];

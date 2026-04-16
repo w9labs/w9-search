@@ -550,13 +550,28 @@ impl WebSearch {
 
             if response.status().is_success() {
                 let json: serde_json::Value = response.json().await?;
-                // Response body: { "key": { "usage": 150, "limit": 1000, ... } }
+                // Response body: { "key": {...}, "account": { "plan_limit": 1000, "search_usage": 0, ... } }
+                
+                // Try account section first (has plan_limit)
+                if let Some(account) = json.get("account") {
+                    let usage = account.get("search_usage").and_then(|v| v.as_i64());
+                    let limit = account.get("plan_limit").and_then(|v| v.as_i64());
+
+                    if let (Some(u), Some(l)) = (usage, limit) {
+                        tracing::info!("Tavily usage: {}/{} (account)", u, l);
+                        db.update_search_limits("search:tavily", Some(u), Some(l), None)
+                            .await?;
+                        return Ok(());
+                    }
+                }
+                
+                // Fallback to key section
                 if let Some(k) = json.get("key") {
-                    let usage = k.get("usage").and_then(|v| v.as_i64());
+                    let usage = k.get("search_usage").and_then(|v| v.as_i64());
                     let limit = k.get("limit").and_then(|v| v.as_i64());
 
                     if let (Some(u), Some(l)) = (usage, limit) {
-                        tracing::info!("Tavily usage: {}/{}", u, l);
+                        tracing::info!("Tavily usage: {}/{} (key)", u, l);
                         db.update_search_limits("search:tavily", Some(u), Some(l), None)
                             .await?;
                     }

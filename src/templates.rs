@@ -865,6 +865,7 @@ pub async fn index(headers: HeaderMap, State(state): State<AppState>) -> Respons
                                             tooltip.innerHTML = `
                                                 <span class="citation-tooltip-title">${source.title}</span>
                                                 <span class="citation-tooltip-url">${source.url}</span>
+                                                <a href="${source.url}" target="_blank" class="citation-link">Open →</a>
                                             `;
                                             span.onclick = (e) => {
                                                 e.stopPropagation();
