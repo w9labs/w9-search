@@ -646,22 +646,30 @@ impl RAGSystem {
 
                 if let Some(choice) = choices.first() {
                     if let Some(message) = choice.get("message") {
-                        // Check for reasoning content (Pollinations AI)
-                        let reasoning_content = message
-                            .get("reasoning_content")
-                            .and_then(|rc| rc.as_str());
-
-                        if let Some(reasoning) = reasoning_content {
+                        // Check for all possible content fields in Pollinations AI response
+                        // Priority: content > reasoning > reasoning_content > (empty)
+                        let content_field = message.get("content").and_then(|c| c.as_str());
+                        let reasoning_field = message.get("reasoning").and_then(|r| r.as_str());
+                        let reasoning_content_field = message.get("reasoning_content").and_then(|rc| rc.as_str());
+                        
+                        // Also check if it's nested in a "text" field (some API responses)
+                        let nested_content = message.get("text").and_then(|t| t.as_str());
+                        
+                        // Extract the best available content
+                        let extracted_content = content_field
+                            .or(nested_content)
+                            .or(reasoning_field)
+                            .or(reasoning_content_field);
+                        
+                        if let Some(reasoning) = reasoning_field.or(reasoning_content_field) {
                             tracing::info!(
-                                "Received reasoning from AI (length: {} chars): {}...",
-                                reasoning.len(),
-                                &reasoning[..reasoning.len().min(200)]
+                                "Received reasoning from AI (length: {} chars)",
+                                reasoning.len()
                             );
-                            // Don't break here - reasoning is just thinking, we still need final answer
                         }
 
-                        // Check if there's content (final answer)
-                        if let Some(content) = message.get("content").and_then(|c| c.as_str()) {
+                        // Check if there's actual content
+                        if let Some(content) = extracted_content {
                             if !content.is_empty() {
                                 tracing::info!(
                                     "Received final answer from AI (length: {} chars)",
@@ -669,20 +677,6 @@ impl RAGSystem {
                                 );
                                 final_answer = content.to_string();
                                 break;
-                            }
-                        }
-
-                        // If content is empty but we have reasoning, use reasoning as answer
-                        if final_answer.is_empty() {
-                            if let Some(reasoning) = reasoning_content {
-                                if !reasoning.is_empty() {
-                                    tracing::info!(
-                                        "Using reasoning as final answer (length: {} chars)",
-                                        reasoning.len()
-                                    );
-                                    final_answer = reasoning.to_string();
-                                    break;
-                                }
                             }
                         }
 
@@ -772,31 +766,6 @@ impl RAGSystem {
                                 );
                                 max_iterations -= 1;
                                 continue;
-                            }
-                        }
-
-                        // Check finish_reason
-                        if let Some(finish_reason) =
-                            choice.get("finish_reason").and_then(|fr| fr.as_str())
-                        {
-                            tracing::info!("AI finished with reason: {}", finish_reason);
-                            if finish_reason == "stop" {
-                                // Try to get content even if not in message.content
-                                if let Some(content) =
-                                    message.get("content").and_then(|c| c.as_str())
-                                {
-                                    if !content.is_empty() {
-                                        final_answer = content.to_string();
-                                        break;
-                                    }
-                                }
-                                // Also try reasoning_content
-                                if let Some(reasoning) = reasoning_content {
-                                    if !reasoning.is_empty() {
-                                        final_answer = reasoning.to_string();
-                                        break;
-                                    }
-                                }
                             }
                         }
                     } else {

@@ -114,14 +114,27 @@ impl Database {
             .await;
         }
 
+        let _ = sqlx::query("ALTER TABLE threads ADD COLUMN user_email TEXT NOT NULL DEFAULT ''")
+            .execute(&self.pool)
+            .await;
+
+        let _ = sqlx::query("ALTER TABLE threads ADD COLUMN is_shared INTEGER NOT NULL DEFAULT 0")
+            .execute(&self.pool)
+            .await;
+
+        let _ = sqlx::query("ALTER TABLE threads ADD COLUMN share_id TEXT")
+            .execute(&self.pool)
+            .await;
+
         Ok(())
     }
 
-    pub async fn create_thread(&self, title: &str) -> anyhow::Result<String> {
+    pub async fn create_thread(&self, title: &str, user_email: &str) -> anyhow::Result<String> {
         let id = uuid::Uuid::new_v4().to_string();
-        sqlx::query("INSERT INTO threads (id, title) VALUES (?, ?)")
+        sqlx::query("INSERT INTO threads (id, title, user_email) VALUES (?, ?, ?)")
             .bind(&id)
             .bind(title)
+            .bind(user_email)
             .execute(&self.pool)
             .await?;
         Ok(id)
@@ -129,7 +142,7 @@ impl Database {
 
     pub async fn get_thread(&self, id: &str) -> anyhow::Result<Option<crate::models::Thread>> {
         let thread = sqlx::query_as::<_, crate::models::Thread>(
-            "SELECT id, title, created_at, updated_at FROM threads WHERE id = ?",
+            "SELECT id, title, user_email, created_at, updated_at, is_shared, share_id FROM threads WHERE id = ?",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -137,14 +150,62 @@ impl Database {
         Ok(thread)
     }
 
-    pub async fn list_threads(&self, limit: i64) -> anyhow::Result<Vec<crate::models::Thread>> {
+    pub async fn list_threads(&self, user_email: &str, limit: i64) -> anyhow::Result<Vec<crate::models::Thread>> {
         let threads = sqlx::query_as::<_, crate::models::Thread>(
-            "SELECT id, title, created_at, updated_at FROM threads ORDER BY updated_at DESC LIMIT ?"
+            "SELECT id, title, user_email, created_at, updated_at, is_shared, share_id FROM threads WHERE user_email = ? ORDER BY updated_at DESC LIMIT ?"
         )
+        .bind(user_email)
         .bind(limit)
         .fetch_all(&self.pool)
         .await?;
         Ok(threads)
+    }
+
+    pub async fn delete_thread(&self, thread_id: &str, user_email: &str) -> anyhow::Result<bool> {
+        let result = sqlx::query("DELETE FROM threads WHERE id = ? AND user_email = ?")
+            .bind(thread_id)
+            .bind(user_email)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn share_thread(&self, thread_id: &str, user_email: &str) -> anyhow::Result<String> {
+        let share_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
+        let result = sqlx::query(
+            "UPDATE threads SET is_shared = 1, share_id = ? WHERE id = ? AND user_email = ?"
+        )
+        .bind(&share_id)
+        .bind(thread_id)
+        .bind(user_email)
+        .execute(&self.pool)
+        .await?;
+        
+        if result.rows_affected() == 0 {
+            return Err(anyhow::anyhow!("Thread not found or not owned by user"));
+        }
+        Ok(share_id)
+    }
+
+    pub async fn get_shared_thread(&self, share_id: &str) -> anyhow::Result<Option<(String, Vec<crate::models::Message>)>> {
+        let thread = sqlx::query_as::<_, (String, String)>(
+            "SELECT id, title FROM threads WHERE share_id = ? AND is_shared = 1"
+        )
+        .bind(share_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        
+        if let Some((id, _)) = thread {
+            let messages = sqlx::query_as::<_, crate::models::Message>(
+                "SELECT id, thread_id, role, content, created_at FROM messages WHERE thread_id = ?"
+            )
+            .bind(&id)
+            .fetch_all(&self.pool)
+            .await?;
+            Ok(Some((id, messages)))
+        } else {
+            Ok(None)
+        }
     }
 
     pub async fn add_message(

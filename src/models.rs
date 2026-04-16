@@ -105,8 +105,14 @@ pub struct OpenRouterChoice {
 pub struct Thread {
     pub id: String,
     pub title: String,
+    #[serde(default)]
+    pub user_email: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    #[serde(default)]
+    pub is_shared: bool,
+    #[serde(default)]
+    pub share_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]

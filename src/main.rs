@@ -9,7 +9,7 @@ mod templates;
 mod tools;
 
 use axum::{
-    routing::{get, post},
+    routing::{delete, get, post},
     Router,
 };
 use std::sync::Arc;
@@ -206,6 +206,9 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/sync", post(api::sync_limits))
         .route("/api/threads", get(api::get_threads))
         .route("/api/threads/:id/messages", get(api::get_thread_messages))
+        .route("/api/threads/:id", delete(api::delete_thread))
+        .route("/api/threads/:id/share", post(api::share_thread))
+        .route("/share/:share_id", get(api::view_shared))
         .nest_service("/static", ServeDir::new("static"))
         .layer(CorsLayer::permissive())
         .with_state(state);

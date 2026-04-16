@@ -62,6 +62,8 @@ pub async fn handle_query_stream(
         }
     };
 
+    let user_email = session.email.clone();
+
     tracing::info!(
         "Received streaming query: '{}' (web_search: {}, model: {:?}, thread: {:?})",
         request.query,
@@ -78,7 +80,7 @@ pub async fn handle_query_stream(
         let thread_id = match request.thread_id {
             Some(id) => id,
             None => {
-                match state.db.create_thread(&request.query).await {
+                match state.db.create_thread(&request.query, &user_email).await {
                     Ok(id) => {
                         let _ = tx
                             .send(Ok(StreamEvent::Status(format!(
@@ -262,11 +264,12 @@ pub async fn get_threads(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<crate::models::Thread>>, impl IntoResponse> {
-    if auth::require_session(&headers).is_none() {
-        return Err((StatusCode::UNAUTHORIZED, "Unauthorized".to_string()));
-    }
+    let session = match auth::require_session(&headers) {
+        Some(session) => session,
+        None => return Err((StatusCode::UNAUTHORIZED, "Unauthorized".to_string())),
+    };
 
-    match state.db.list_threads(50).await {
+    match state.db.list_threads(&session.email, 50).await {
         Ok(threads) => Ok(Json(threads)),
         Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {}", e))),
     }
@@ -277,8 +280,19 @@ pub async fn get_thread_messages(
     headers: HeaderMap,
     axum::extract::Path(thread_id): axum::extract::Path<String>,
 ) -> Result<Json<Vec<crate::models::Message>>, impl IntoResponse> {
-    if auth::require_session(&headers).is_none() {
-        return Err((StatusCode::UNAUTHORIZED, "Unauthorized".to_string()));
+    let session = match auth::require_session(&headers) {
+        Some(session) => session,
+        None => return Err((StatusCode::UNAUTHORIZED, "Unauthorized".to_string())),
+    };
+
+    let thread = match state.db.get_thread(&thread_id).await {
+        Ok(Some(t)) => t,
+        Ok(None) => return Err((StatusCode::NOT_FOUND, "Thread not found".to_string())),
+        Err(e) => return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {}", e))),
+    };
+
+    if thread.user_email != session.email {
+        return Err((StatusCode::FORBIDDEN, "Access denied".to_string()));
     }
 
     match state.db.get_thread_messages(&thread_id).await {
@@ -320,4 +334,66 @@ pub async fn sync_limits(State(state): State<AppState>, headers: HeaderMap) -> i
     }
 
     StatusCode::OK
+}
+
+pub async fn delete_thread(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path(thread_id): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    let session = match auth::require_session(&headers) {
+        Some(session) => session,
+        None => return Err((StatusCode::UNAUTHORIZED, "Unauthorized".to_string())),
+    };
+
+    let thread = match state.db.get_thread(&thread_id).await {
+        Ok(Some(t)) => t,
+        Ok(None) => return Err((StatusCode::NOT_FOUND, "Thread not found".to_string())),
+        Err(e) => return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {}", e))),
+    };
+
+    if thread.user_email != session.email {
+        return Err((StatusCode::FORBIDDEN, "Access denied".to_string()));
+    }
+
+    match state.db.delete_thread(&thread_id, &session.email).await {
+        Ok(true) => Ok(StatusCode::NO_CONTENT),
+        Ok(false) => Err((StatusCode::NOT_FOUND, "Thread not found".to_string())),
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {}", e))),
+    }
+}
+
+#[derive(serde::Serialize)]
+pub struct ShareResponse {
+    pub share_id: String,
+}
+
+pub async fn share_thread(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path(thread_id): axum::extract::Path<String>,
+) -> Result<Json<ShareResponse>, impl IntoResponse> {
+    let session = match auth::require_session(&headers) {
+        Some(session) => session,
+        None => return Err((StatusCode::UNAUTHORIZED, "Unauthorized".to_string())),
+    };
+
+    match state.db.share_thread(&thread_id, &session.email).await {
+        Ok(share_id) => Ok(Json(ShareResponse { share_id })),
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    }
+}
+
+pub async fn view_shared(
+    State(state): State<AppState>,
+    axum::extract::Path(share_id): axum::extract::Path<String>,
+) -> Result<Json<serde_json::Value>, impl IntoResponse> {
+    match state.db.get_shared_thread(&share_id).await {
+        Ok(Some((thread_id, messages))) => Ok(Json(serde_json::json!({
+            "thread_id": thread_id,
+            "messages": messages
+        }))),
+        Ok(None) => Err((StatusCode::NOT_FOUND, "Shared thread not found".to_string())),
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    }
 }
