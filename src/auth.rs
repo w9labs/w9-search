@@ -1,7 +1,7 @@
 use axum::{
     extract::Query,
     http::{header, HeaderMap, HeaderValue},
-    response::{IntoResponse, Redirect, Response},
+    response::{Html, IntoResponse, Redirect, Response},
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::Deserialize;
@@ -105,16 +105,18 @@ pub fn require_admin(headers: &HeaderMap) -> Option<UserSession> {
     require_session(headers).filter(|session| session.role == "admin")
 }
 
+pub fn can_choose_model_role(role: &str) -> bool {
+    matches!(role, "admin" | "dev" | "developer")
+}
+
 async fn redirect_to_login() -> Response {
     Redirect::to("/login").into_response()
 }
 
-pub async fn login(headers: HeaderMap) -> Response {
-    if require_session(&headers).is_some() {
-        return Redirect::to("/").into_response();
-    }
-
-    Redirect::to(&login_url()).into_response()
+fn popup_close_html(target: &str) -> String {
+    format!(
+        r#"<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>W9 Search Login</title></head><body><script>(function(){{const target = {target:?}; if (window.opener && !window.opener.closed) {{ try {{ window.opener.location.href = target; window.opener.focus(); }} catch (_) {{}} window.close(); }} else {{ window.location.replace(target); }}}})();</script><p>Signing you in...</p></body></html>"#
+    )
 }
 
 pub async fn callback(Query(query): Query<OAuthCallbackQuery>) -> Response {
@@ -214,7 +216,7 @@ pub async fn callback(Query(query): Query<OAuthCallbackQuery>) -> Response {
     };
     let session_value = encode_session(&session);
 
-    let mut response = Redirect::to("/").into_response();
+    let mut response = Html(popup_close_html("/")).into_response();
     response.headers_mut().insert(
         header::SET_COOKIE,
         build_cookie_header(&session_value, SESSION_MAX_AGE_SECONDS),

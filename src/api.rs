@@ -55,9 +55,12 @@ pub async fn handle_query_stream(
     headers: HeaderMap,
     Json(request): Json<QueryRequest>,
 ) -> Response {
-    if auth::require_session(&headers).is_none() {
-        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
-    }
+    let session = match auth::require_session(&headers) {
+        Some(session) => session,
+        None => {
+            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+        }
+    };
 
     tracing::info!(
         "Received streaming query: '{}' (web_search: {}, model: {:?}, thread: {:?})",
@@ -123,7 +126,12 @@ pub async fn handle_query_stream(
 
         // 4. Model Selection
         let prefer_search = request.web_search_enabled || request.search_reasoning_enabled;
-        let model = match resolve_model(&state, request.model.clone(), prefer_search).await {
+        let requested_model = if auth::can_choose_model_role(&session.role) {
+            request.model.clone()
+        } else {
+            Some("auto".to_string())
+        };
+        let model = match resolve_model(&state, requested_model, prefer_search).await {
             Ok(model) => model,
             Err(e) => {
                 let _ = tx.send(Ok(StreamEvent::Error(e.to_string()))).await;
@@ -207,15 +215,21 @@ pub async fn handle_query(
     headers: HeaderMap,
     Json(request): Json<QueryRequest>,
 ) -> Result<Json<QueryResponse>, impl IntoResponse> {
-    if auth::require_session(&headers).is_none() {
-        return Err((StatusCode::UNAUTHORIZED, "Unauthorized".to_string()));
-    }
+    let session = match auth::require_session(&headers) {
+        Some(session) => session,
+        None => return Err((StatusCode::UNAUTHORIZED, "Unauthorized".to_string())),
+    };
 
     // Non-streaming endpoint (legacy support, simplified)
     tracing::info!("Received query: '{}'", request.query);
 
     let prefer_search = request.web_search_enabled || request.search_reasoning_enabled;
-    let model = match resolve_model(&state, request.model.clone(), prefer_search).await {
+    let requested_model = if auth::can_choose_model_role(&session.role) {
+        request.model.clone()
+    } else {
+        Some("auto".to_string())
+    };
+    let model = match resolve_model(&state, requested_model, prefer_search).await {
         Ok(model) => model,
         Err(e) => return Err((StatusCode::SERVICE_UNAVAILABLE, e.to_string())),
     };

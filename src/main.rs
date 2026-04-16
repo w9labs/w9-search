@@ -190,7 +190,7 @@ async fn run() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/", get(templates::index))
-        .route("/login", get(auth::login))
+        .route("/login", get(templates::login))
         .route("/oauth/callback", get(auth::callback))
         .route("/logout", get(auth::logout))
         .route("/admin", get(templates::admin))

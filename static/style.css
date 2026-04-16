@@ -1396,3 +1396,92 @@ header .brand-banner {
         align-items: flex-start;
     }
 }
+
+body.auth-page {
+    flex-direction: column;
+    min-height: 100vh;
+    height: auto;
+    overflow-y: auto;
+}
+
+.auth-shell {
+    width: min(100%, 1080px);
+    margin: 0 auto;
+    padding: 1rem 1rem 2rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.auth-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 1rem;
+}
+
+.auth-copy {
+    font-size: 1.2rem;
+    color: var(--text-dim);
+}
+
+.auth-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .75rem;
+    margin-top: .75rem;
+}
+
+.cta-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: .85rem 1rem;
+    background: var(--accent);
+    color: #000;
+    border: 4px solid var(--border-strong);
+    box-shadow: var(--shadow);
+    font-family: 'Press Start 2P', monospace;
+    font-size: .48rem;
+    line-height: 1.5;
+    text-transform: uppercase;
+    text-decoration: none;
+    transition: transform .12s ease, box-shadow .12s ease;
+}
+
+.cta-link.secondary {
+    background: var(--panel-2);
+    color: var(--text);
+}
+
+.cta-link:hover {
+    transform: translate(2px, 2px);
+    box-shadow: 2px 2px 0 var(--border-strong);
+}
+
+.model-picker {
+    align-items: flex-start;
+    gap: .4rem;
+}
+
+.model-picker .model-select {
+    min-width: 260px;
+    width: 100%;
+}
+
+@media (max-width: 768px) {
+    .auth-shell {
+        padding: .85rem;
+    }
+
+    .auth-actions {
+        flex-direction: column;
+    }
+
+    .cta-link {
+        width: 100%;
+    }
+
+    .model-picker .model-select {
+        min-width: 0;
+    }
+}

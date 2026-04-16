@@ -8,7 +8,290 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use tracing;
 
-use crate::{auth, llm::ProviderType, AppState};
+use crate::{
+    auth,
+    llm::{Model, ProviderType},
+    AppState,
+};
+
+fn model_option_label(model: &Model) -> String {
+    let mut tags = Vec::new();
+    if model.supports_native_search {
+        tags.push("search");
+    }
+    if model.supports_reasoning {
+        tags.push("reasoning");
+    }
+    if model.supports_tools {
+        tags.push("tools");
+    }
+    if model.is_free {
+        tags.push("free");
+    }
+
+    if tags.is_empty() {
+        model.name.clone()
+    } else {
+        format!("{} [{}]", model.name, tags.join(", "))
+    }
+}
+
+fn auth_page(title: &str, subtitle: &str, nav: Markup, content: Markup) -> Markup {
+    html! {
+        (DOCTYPE)
+        html lang="en" {
+            head {
+                meta charset="utf-8";
+                meta name="viewport" content="width=device-width, initial-scale=1";
+                title { (title) }
+                link rel="icon" href="/static/favicon.svg" type="image/svg+xml";
+                link rel="stylesheet" href="/static/style.css";
+                link rel="preconnect" href="https://fonts.googleapis.com";
+                link rel="preconnect" href="https://fonts.gstatic.com" crossorigin;
+                link href=(r#"https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap"#) rel="stylesheet";
+            }
+            body class="auth-page" {
+                div class="auth-shell" {
+                    header {
+                        img class="brand-banner" src="/static/w9-search-banner.svg" alt="W9 Search";
+                        h1 { (title) }
+                        p class="subtitle" { (subtitle) }
+                        nav { (nav) }
+                    }
+                    (content)
+                }
+            }
+        }
+    }
+}
+
+fn public_landing_page() -> Markup {
+    auth_page(
+        "W9 Search",
+        "Public landing, role-aware chat, and auto routing without surprise redirects.",
+        html! {
+            a href="/login" class="nav-link" { "Login" }
+            a href="#features" class="nav-link" { "Features" }
+        },
+        html! {
+            div class="section" {
+                div class="card" {
+                    div class="card-header" {
+                        span class="provider-badge" { "Public" }
+                        h3 { "Search without auto login" }
+                    }
+                    div class="card-body" {
+                        p class="auth-copy" {
+                            "search.w9.nu opens here first. Nothing signs you in until you ask for it."
+                        }
+                        div class="auth-actions" {
+                            a href="/login" class="cta-link" { "Sign in with W9 DB" }
+                            a href="#features" class="cta-link secondary" { "See features" }
+                        }
+                    }
+                }
+            }
+
+            div id="features" class="auth-grid" {
+                div class="card" {
+                    div class="card-header" {
+                        span class="badge badge--ok" { "Auto" }
+                        h3 { "Smart routing" }
+                    }
+                    div class="card-body" {
+                        p class="auth-copy" {
+                            "Auto mode chooses the best allowed model and search backend for each query."
+                        }
+                    }
+                }
+                div class="card" {
+                    div class="card-header" {
+                        span class="badge badge--warn" { "Search" }
+                        h3 { "Native search aware" }
+                    }
+                    div class="card-body" {
+                        p class="auth-copy" {
+                            "Models with native search skip local web search; unsupported models get an agentic search path."
+                        }
+                    }
+                }
+                div class="card" {
+                    div class="card-header" {
+                        span class="badge badge--warn" { "Roles" }
+                        h3 { "Admin / Dev model picker" }
+                    }
+                    div class="card-body" {
+                        p class="auth-copy" {
+                            "Admin and dev accounts can pick a model inside chat. Everyone else stays on Auto (Smart)."
+                        }
+                    }
+                }
+                div class="card" {
+                    div class="card-header" {
+                        span class="badge badge--ok" { "Mobile" }
+                        h3 { "Responsive by default" }
+                    }
+                    div class="card-body" {
+                        p class="auth-copy" {
+                            "The landing page, login page, and chat shell are tuned for desktop and mobile."
+                        }
+                    }
+                }
+            }
+
+            div class="section" {
+                div class="card" {
+                    div class="card-header" {
+                        span class="provider-badge" { "Access" }
+                        h3 { "How login works" }
+                    }
+                    div class="card-body" {
+                        p class="auth-copy" {
+                            "Use the W9 DB login page when you want to start chatting. The callback closes the popup and returns you here."
+                        }
+                    }
+                }
+            }
+        },
+    )
+}
+
+fn login_page_markup(session: Option<&auth::UserSession>) -> Markup {
+    let nav = html! {
+        a href="/" class="nav-link" { "Home" }
+        a href="#access" class="nav-link" { "Access" }
+    };
+
+    let content = if let Some(session) = session {
+        html! {
+            div class="auth-grid" id="access" {
+                div class="card" {
+                    div class="card-header" {
+                        span class="badge badge--ok" { "Signed in" }
+                        h3 { "You already have access" }
+                    }
+                    div class="card-body" {
+                        p class="auth-copy" {
+                            (format!("Signed in as {} with the {} role.", session.email, session.role))
+                        }
+                        div class="auth-actions" {
+                            a href="/" class="cta-link" { "Open Search" }
+                            a href="/logout" class="cta-link secondary" { "Sign out" }
+                        }
+                    }
+                }
+                div class="card" {
+                    div class="card-header" {
+                        span class="provider-badge" { "Role" }
+                        h3 { "What this account can do" }
+                    }
+                    div class="card-body" {
+                        p class="auth-copy" {
+                            "Admin and dev accounts can choose a model inside chat. Everyone else stays on Auto (Smart)."
+                        }
+                        div class="model-badges" {
+                            span class="badge badge--ok" { "Auto routing" }
+                            span class="badge badge--warn" { "Model picker in chat" }
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        html! {
+            div class="auth-grid" {
+                div class="card" {
+                    div class="card-header" {
+                        span class="badge badge--ok" { "Login" }
+                        h3 { "Continue with W9 DB" }
+                    }
+                    div class="card-body" {
+                        p class="auth-copy" {
+                            "Sign in to unlock chat, saved threads, and the auto-routed search pipeline."
+                        }
+                        div class="auth-actions" {
+                            a href=(auth::login_url()) class="cta-link" onclick="const w = window.open(this.href, 'w9-search-login', 'width=520,height=720'); if (w) { w.focus(); return false; }" { "Open W9 DB Login" }
+                            a href="/" class="cta-link secondary" { "Back to landing" }
+                        }
+                    }
+                }
+                div class="card" {
+                    div class="card-header" {
+                        span class="badge badge--warn" { "Advanced" }
+                        h3 { "Role-based model access" }
+                    }
+                    div class="card-body" {
+                        p class="auth-copy" {
+                            "Admin and dev accounts can choose a model in chat. Everyone else uses Auto (Smart) for safety."
+                        }
+                        div class="model-badges" {
+                            span class="badge badge--ok" { "Auto for everyone" }
+                            span class="badge badge--warn" { "Manual models for admin/dev" }
+                        }
+                    }
+                }
+            }
+        }
+    };
+
+    auth_page(
+        "W9 Search Login",
+        "A separate login page with popup sign-in and a clear return path.",
+        nav,
+        content,
+    )
+}
+
+fn render_model_picker(session: &auth::UserSession, models: &[Model]) -> Markup {
+    if !auth::can_choose_model_role(&session.role) {
+        return html! {
+            div class="control-group" {
+                div class="provider-badge" { "Auto (Smart)" }
+                input type="hidden" id="model-select" value="auto" {}
+            }
+        };
+    }
+
+    let mut grouped_models = Vec::new();
+    for provider in ProviderType::all() {
+        let mut provider_models: Vec<&Model> = models
+            .iter()
+            .filter(|model| model.provider == *provider)
+            .collect();
+        provider_models.sort_by(|a, b| a.name.cmp(&b.name));
+        if !provider_models.is_empty() {
+            grouped_models.push((*provider, provider_models));
+        }
+    }
+
+    html! {
+        div class="control-group model-picker" {
+            span class="label" { "Model" }
+            select id="model-select" class="model-select" {
+                option value="auto" selected { "Auto (Smart)" }
+                @for (provider, provider_models) in grouped_models {
+                    optgroup label=(provider.to_string()) {
+                        @for model in provider_models {
+                            option value=(model.id.as_str()) {
+                                (model_option_label(model))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        @if models.is_empty() {
+            span class="badge badge--warn" { "Model cache warming" }
+        } @else {
+            span class="badge badge--ok" { "Admin / Dev" }
+        }
+    }
+}
+
+pub async fn login(headers: HeaderMap) -> Response {
+    let session = auth::require_session(&headers);
+    Html(login_page_markup(session.as_ref()).into_string()).into_response()
+}
 
 pub async fn models(headers: HeaderMap, State(state): State<AppState>) -> Response {
     let Some(session) = auth::require_session(&headers) else {
@@ -136,15 +419,28 @@ pub async fn models(headers: HeaderMap, State(state): State<AppState>) -> Respon
                                 }
                                 div class="meta-item" {
                                     span class="label" { "Mode:" }
-                                    span { "Manual model selection is disabled" }
+                                    span {
+                                        @if auth::can_choose_model_role(&session.role) {
+                                            "Model picker available in chat"
+                                        } @else {
+                                            "Auto (Smart) only for this account"
+                                        }
+                                    }
                                 }
                                 p class="text-muted" {
-                                    "W9 Search now chooses the best provider automatically from the approved Pollinations set and the configured search backends."
+                                    @if auth::can_choose_model_role(&session.role) {
+                                        "W9 Search keeps auto routing for everyone, and this account can switch models in chat when needed."
+                                    } @else {
+                                        "W9 Search now chooses the best provider automatically from the approved Pollinations set and the configured search backends."
+                                    }
                                 }
                                 div class="model-badges" {
                                     span class="badge badge--ok" { "Auto route" }
                                     span class="badge badge--warn" { "Native search aware" }
                                     span class="badge badge--warn" { "Reasoning aware" }
+                                    @if auth::can_choose_model_role(&session.role) {
+                                        span class="badge badge--ok" { "Model picker in chat" }
+                                    }
                                 }
                             }
                         }
@@ -156,9 +452,15 @@ pub async fn models(headers: HeaderMap, State(state): State<AppState>) -> Respon
     Html(markup.into_string()).into_response()
 }
 
-pub async fn index(headers: HeaderMap) -> Response {
+pub async fn index(headers: HeaderMap, State(state): State<AppState>) -> Response {
     let Some(session) = auth::require_session(&headers) else {
-        return Redirect::to("/login").into_response();
+        return Html(public_landing_page().into_string()).into_response();
+    };
+
+    let models = if auth::can_choose_model_role(&session.role) {
+        state.llm_manager.get_models().await
+    } else {
+        Vec::new()
     };
 
     let markup: Markup = html! {
@@ -228,10 +530,7 @@ pub async fn index(headers: HeaderMap) -> Response {
                                     span { "Reasoning" }
                                 }
                             }
-                            div class="control-group" {
-                                div class="provider-badge" { "Auto (Smart)" }
-                                input type="hidden" id="model-select" value="auto" {}
-                            }
+                            (render_model_picker(&session, &models))
                             div class="control-group" {
                                 select id="provider-select" {
                                     option value="auto" { "Auto Engine" }
@@ -243,7 +542,11 @@ pub async fn index(headers: HeaderMap) -> Response {
                             }
                         }
                         p class="search-note" {
-                            "Auto mode picks the smartest allowed model for each query. Native-search models skip local web search, and reasoning expands the planner when available."
+                            @if auth::can_choose_model_role(&session.role) {
+                                "Auto mode still picks the smartest allowed model by default. Admin and dev accounts can override it with the selector above."
+                            } @else {
+                                "Auto mode picks the smartest allowed model for each query. Native-search models skip local web search, and reasoning expands the planner when available."
+                            }
                         }
                         div class="input-container" {
                             textarea id="user-input" placeholder="Type your follow-up question..." rows="1" {}
@@ -364,7 +667,8 @@ pub async fn index(headers: HeaderMap) -> Response {
                     }
 
                     // --- Input Handling ---
-                    const input = document.getElementById('user-input');
+                     const input = document.getElementById('user-input');
+                    const modelSelect = document.getElementById('model-select');
                     
                     input.addEventListener('keydown', (e) => {
                         if (e.key === 'Enter' && !e.shiftKey) {
@@ -409,7 +713,7 @@ pub async fn index(headers: HeaderMap) -> Response {
                                     query,
                                     web_search_enabled: document.getElementById('web-search-toggle').checked,
                                     search_reasoning_enabled: document.getElementById('search-reasoning-toggle').checked,
-                                    model: 'auto',
+                                    model: modelSelect ? modelSelect.value : 'auto',
                                     search_provider: document.getElementById('provider-select').value,
                                     thread_id: currentThreadId 
                                 })

@@ -8,6 +8,7 @@ A web application built with the **MASH** stack (Maud + Axum + SQLx + HTMX) that
 - 🔍 Hosted SearXNG research path with agentic fallback for models without native search
 - 🧠 Optional reasoning mode for deeper search planning
 - 📚 RAG system that retrieves and uses web sources when the selected model needs them
+- 🔐 Public landing page, dedicated popup login, and admin/dev-only model selection in chat
 - 💾 SQLite database for storing sources
 - 🎨 Shared W9 voxel-style UI with mobile-friendly layout
 
@@ -31,6 +32,7 @@ cp .env.example .env
 3. Add your API keys to `.env` (OpenRouter is required for non-Pollinations models; hosted SearXNG is the default):
 ```
 OPENROUTER_API_KEY=your_key_here
+APP_BASE_URL=https://search.w9.nu
 SEARXNG_BASE_URL=https://searxng.w9.nu
 ```
 

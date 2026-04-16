@@ -5,6 +5,7 @@ name: w9-search
 port: 3005
 env:
   - PORT=3005
+  - APP_BASE_URL=https://search.w9.nu
   - RUST_LOG=info
   - DATABASE_URL=sqlite:/app/data/w9_search.db
   - SEARXNG_BASE_URL=https://searxng.w9.nu
