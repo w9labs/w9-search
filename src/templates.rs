@@ -875,6 +875,9 @@ pub async fn index(headers: HeaderMap, State(state): State<AppState>) -> Respons
 
                         // Collapse thinking after done
                         thinkingDiv.style.display = 'none'; // Auto-hide thinking process
+                    } catch (e) {
+                        answerTextDiv.innerHTML += `<div class="error">Error: ${e.message}</div>`;
+                        thinkingDiv.style.display = 'none';
                     }
 
                     // --- Markdown Renderer ---
