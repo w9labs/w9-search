@@ -8,6 +8,17 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum QueryType {
+    Factual,
+    Comparative,
+    HowTo,
+    Explanation,
+    News,
+    Opinion,
+    General,
+}
+
 pub struct RAGSystem {
     db: Arc<Database>,
     llm_manager: Arc<LLMManager>,
@@ -48,6 +59,53 @@ impl RAGSystem {
         if let Some(tx) = sender {
             let _ = tx.send(Ok(StreamEvent::Status(message.into()))).await;
         }
+    }
+
+    /// Classify query type for intelligent routing (I-RAG)
+    fn classify_query(query: &str) -> QueryType {
+        let q = query.to_lowercase();
+        if q.contains("compare") || q.contains("difference") || q.contains("versus") || q.contains("vs ") {
+            QueryType::Comparative
+        } else if q.contains("how to") || q.contains("how do") || q.contains("guide") || q.contains("tutorial") {
+            QueryType::HowTo
+        } else if q.contains("why") || q.contains("reason") || q.contains("explain") {
+            QueryType::Explanation
+        } else if q.contains("news") || q.contains("recent") || q.contains("latest") || q.contains("breaking") {
+            QueryType::News
+        } else if q.contains("opinion") || q.contains("think") || q.contains("best") || q.contains("recommend") {
+            QueryType::Opinion
+        } else if q.contains("who is") || q.contains("what is") || q.contains("when did") || q.contains("where is") || q.contains("current") || q.contains("president") || q.contains("leader") {
+            QueryType::Factual
+        } else {
+            QueryType::General
+        }
+    }
+
+    /// Calculate confidence score based on source coverage (Agentic RAG)
+    fn calculate_confidence(answer: &str, sources: &[crate::models::Source]) -> f64 {
+        if sources.is_empty() {
+            return 0.2;
+        }
+        let answer_lower = answer.to_lowercase();
+        let mut covered_facts = 0;
+        let _total_claims = answer_lower.matches('.').count().max(1);
+        
+        for source in sources {
+            let content = source.content.to_lowercase();
+            let key_terms: Vec<&str> = content.split_whitespace()
+                .filter(|w| w.len() > 5)
+                .take(20)
+                .collect();
+            for term in key_terms {
+                if answer_lower.contains(term) {
+                    covered_facts += 1;
+                    break;
+                }
+            }
+        }
+        
+        let source_coverage = (covered_facts as f64 / sources.len() as f64).min(1.0);
+        0.3 + (source_coverage * 0.7)
     }
 
     /// Ask the LLM to plan the research steps with enhanced intelligence
@@ -263,6 +321,17 @@ impl RAGSystem {
         );
         self.send_status(&status_sender, "Initializing search...")
             .await;
+
+        // I-RAG: Classify query type for intelligent routing
+        let query_type = Self::classify_query(user_query);
+        tracing::info!("Query classified as: {:?}", query_type);
+
+        // Adjust search strategy based on query type
+        let search_depth = match query_type {
+            QueryType::Comparative | QueryType::Explanation => 2, // More sources for comparison
+            QueryType::News | QueryType::Factual => 1, // Standard
+            _ => 1,
+        };
 
         let mut context_sources = Vec::new();
         let native_search = web_search_enabled && self.model.supports_native_search;
@@ -753,6 +822,51 @@ impl RAGSystem {
                 "Successfully generated answer (length: {} chars)",
                 final_answer.len()
             );
+        }
+
+        // AGENTIC RAG: Verify answer against sources
+        if agentic_search && !final_answer.is_empty() {
+            let confidence = Self::calculate_confidence(&final_answer, &context_sources);
+            tracing::info!("Answer confidence: {:.2}", confidence);
+            
+            if confidence < 0.5 {
+                self.send_status(&status_sender, "Verifying answer accuracy...")
+                    .await;
+                
+                if !context_sources.is_empty() {
+                    let verification_context: String = context_sources.iter()
+                        .take(3)
+                        .map(|s| format!("[{}]: {}", s.title, s.content.chars().take(500).collect::<String>()))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    
+                    let verify_system = format!("You are a fact-checker. Verify if the answer is supported by the sources. If not, correct it. Sources:\n{}", verification_context);
+                    let verify_msg = vec![
+                        json!({"role": "system", "content": verify_system}),
+                        json!({"role": "user", "content": format!("Verify this answer: {}", final_answer)})
+                    ];
+                    
+                    if let Ok(verify_resp) = self.llm_manager.chat_completion(
+                        &self.model.id,
+                        verify_msg,
+                        None,
+                        false
+                    ).await {
+                        if let Some(choices) = verify_resp.get("choices").and_then(|c| c.as_array()) {
+                            if let Some(choice) = choices.first() {
+                                if let Some(message) = choice.get("message") {
+                                    if let Some(content) = message.get("content").and_then(|c| c.as_str()) {
+                                        if content.len() < final_answer.len() * 2 && !content.contains("not supported") {
+                                            final_answer = content.to_string();
+                                            tracing::info!("Answer refined through verification");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         Ok((final_answer, context_sources))
