@@ -152,25 +152,28 @@ struct PollinationsModel {
 
 const POLLINATIONS_ALLOWED_MODELS: &[&str] = &[
     "nova-fast",
+    "mistral",
+    "qwen-coder",
     "gemini-search",
+    "openai",
     "perplexity-fast",
-    // "qwen-safety" - Removed: This is a content safety/moderation model, not a general assistant
-    // It returns "Safety: Safe" instead of answering questions
-    "deepseek",
-    "qwen-large",
-    "grok-large",
+    "grok",
+    "openai-fast",
+    "minimax",
 ];
 
-const SEARCH_PRIORITY: &[&str] = &["perplexity-fast", "gemini-search", "sonar", "search"];
+const SEARCH_PRIORITY: &[&str] = &["perplexity-fast", "gemini-search"];
 
 const GENERAL_PRIORITY: &[&str] = &[
-    "deepseek-r1",
-    "claude",
-    "gpt-4",
-    "qwen",
-    "gemini",
     "nova-fast",
+    "grok",
+    "openai",
+    "openai-fast",
+    "minimax",
+    "mistral",
+    "gemini-search",
     "perplexity-fast",
+    "qwen-coder",
 ];
 
 fn infer_native_search(id: &str, name: &str, description: Option<&str>) -> bool {
