@@ -511,24 +511,22 @@ impl RAGSystem {
                 \n\
                 CURRENT DATE: {} (use this to answer 'current', 'latest', 'today' questions)\n\
                 \n\
-                IMPORTANT: For simple factual questions (like 'who is the president of X'), answer DIRECTLY without using tools or thinking. Just provide the answer.\n\
-                \n\
                 TASK: Answer the user's query using the provided sources as your PRIMARY information source.\n\
                 \n\
                 PRIORITY RULES:\n\
                 1. ALWAYS prioritize the provided sources over your training data\n\
                 2. If sources contain the answer, cite them with [Source N]\n\
-                3. If sources are INSUFFICIENT or OUTDATED, you MAY use your knowledge but clearly state: \"Based on my knowledge...\"\n\
-                4. For 'current' or 'recent' questions about leaders/presidents: The current US President is Donald Trump (inaugurated January 20, 2025). Canada has Mark Carney as Prime Minister (started March 2025).\n\
-                5. For factual questions, prefer the most recent source date\n\
+                3. If sources are INSUFFICIENT or OUTDATED, use your knowledge but state it clearly\n\
+                4. For 'current' leaders (as of {}): US President Donald Trump (since Jan 2025), Canada PM Mark Carney (since March 2025), Vietnam President Tô Lâm (since April 2026).\n\
+                5. For factual questions, cite sources and give direct answer\n\
                 \n\
-                OUTPUT FORMAT:\n\
-                - Start with direct answer\n\
-                - Cite sources using [Source N]\n\
-                - If using your own knowledge, explicitly state it\n\
-                - DO NOT use <thinking> tags - just give the answer\n\
+                OUTPUT:\n\
+                - Put your internal reasoning in <thinking> tags (will be shown to user)\n\
+                - Give the final answer clearly AFTER the thinking\n\
+                - Cite sources with [Source N]\n\
                 \n\
                 SOURCES:\n{}",
+                current_date,
                 current_date,
                 context
             )
@@ -744,18 +742,13 @@ impl RAGSystem {
             max_iterations -= 1;
         }
 
-        // Clean up answer: remove <thinking> tags and internal reasoning
+        // Extract final answer: content after </thinking> tags is the real answer
         if !final_answer.is_empty() {
-            let cleaned = final_answer
-                .clone()
-                .split("<thinking>").last()
-                .unwrap_or(&final_answer)
-                .split("</thinking>").next()
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            if !cleaned.is_empty() {
-                final_answer = cleaned;
+            if let Some(after_thinking) = final_answer.split("</thinking>").nth(1) {
+                let answer_part = after_thinking.trim();
+                if !answer_part.is_empty() && answer_part.len() > 10 {
+                    final_answer = answer_part.to_string();
+                }
             }
         }
 
