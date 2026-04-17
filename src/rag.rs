@@ -29,7 +29,8 @@ pub struct RAGSystem {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(tag = "type", content = "data")]
 pub enum StreamEvent {
-    Status(String),
+    Status(String),    // System/process status messages
+    Thinking(String),  // Model's reasoning/chain-of-thought
     Source(crate::models::Source),
     Answer(String),
     Error(String),
@@ -58,6 +59,16 @@ impl RAGSystem {
     ) {
         if let Some(tx) = sender {
             let _ = tx.send(Ok(StreamEvent::Status(message.into()))).await;
+        }
+    }
+
+    async fn send_thinking(
+        &self,
+        sender: &Option<Sender<Result<StreamEvent, anyhow::Error>>>,
+        message: impl Into<String>,
+    ) {
+        if let Some(tx) = sender {
+            let _ = tx.send(Ok(StreamEvent::Thinking(message.into()))).await;
         }
     }
 
@@ -744,6 +755,25 @@ impl RAGSystem {
 
         // Extract final answer: content after </thinking> tags is the real answer
         if !final_answer.is_empty() {
+            // First, extract and send thinking content if it exists
+            if let Some(thinking_start) = final_answer.find("<thinking>") {
+                if let Some(thinking_end) = final_answer.find("</thinking>") {
+                    if thinking_start < thinking_end {
+                        let thinking_content = &final_answer[thinking_start + 10..thinking_end];
+                        if !thinking_content.is_empty() {
+                            // Split thinking by sentences or paragraphs and send as separate steps
+                            for line in thinking_content.lines() {
+                                let trimmed = line.trim();
+                                if !trimmed.is_empty() {
+                                    self.send_thinking(&status_sender, trimmed.to_string()).await;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Now extract the answer part
             if let Some(after_thinking) = final_answer.split("</thinking>").nth(1) {
                 let answer_part = after_thinking.trim();
                 if !answer_part.is_empty() && answer_part.len() > 10 {

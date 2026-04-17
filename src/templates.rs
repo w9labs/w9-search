@@ -799,12 +799,19 @@ pub async fn index(headers: HeaderMap, State(state): State<AppState>) -> Respons
                                                         loadThreads();
                                                     }
                                                 } else {
-                                                    const step = document.createElement('div');
-                                                    step.className = 'thinking-step';
-                                                    step.textContent = '> ' + event.data;
-                                                    thinkingDiv.appendChild(step);
-                                                    thinkingDiv.scrollTop = thinkingDiv.scrollHeight;
+                                                    // System status only - don't show in thinking
+                                                    console.log('Status:', event.data);
                                                 }
+                                            } else if (event.type === 'Thinking') {
+                                                // Model's chain-of-thought reasoning
+                                                const step = document.createElement('div');
+                                                step.className = 'thinking-step';
+                                                step.style.whiteSpace = 'pre-wrap';
+                                                step.style.wordWrap = 'break-word';
+                                                step.style.marginBottom = '6px';
+                                                step.textContent = event.data;
+                                                thinkingDiv.appendChild(step);
+                                                thinkingDiv.scrollTop = thinkingDiv.scrollHeight;
                                             } else if (event.type === 'Source') {
                                                 accumulatedSources.push(event.data);
                                             } else if (event.type === 'Answer') {
@@ -842,28 +849,57 @@ pub async fn index(headers: HeaderMap, State(state): State<AppState>) -> Respons
                             const thinkingContent = document.createElement('div');
                             thinkingContent.className = 'thinking-content';
                             thinkingContent.style.display = 'none';
-                            thinkingContent.style.padding = '10px';
+                            thinkingContent.style.padding = '12px';
                             thinkingContent.style.marginTop = '8px';
-                            thinkingContent.style.background = 'rgba(99, 102, 241, 0.1)';
-                            thinkingContent.style.borderLeft = '3px solid var(--accent)';
-                            thinkingContent.style.fontSize = '0.85em';
-                            thinkingContent.style.color = '#888';
+                            thinkingContent.style.background = 'rgba(99, 102, 241, 0.08)';
+                            thinkingContent.style.borderLeft = '4px solid var(--accent)';
+                            thinkingContent.style.borderRadius = '4px';
+                            thinkingContent.style.fontSize = '0.9em';
+                            thinkingContent.style.lineHeight = '1.5';
+                            thinkingContent.style.color = '#999';
                             thinkingContent.style.fontFamily = 'monospace';
-                            thinkingContent.style.maxHeight = '200px';
+                            thinkingContent.style.maxHeight = '300px';
                             thinkingContent.style.overflowY = 'auto';
+                            thinkingContent.style.whiteSpace = 'pre-wrap';
+                            thinkingContent.style.wordWrap = 'break-word';
                             // Re-add the thinking steps to the container
-                            existingSteps.forEach(step => thinkingContent.appendChild(step));
+                            existingSteps.forEach((step, idx) => {
+                                const stepEl = step.cloneNode(true);
+                                stepEl.style.marginBottom = '8px';
+                                stepEl.style.paddingBottom = '8px';
+                                if (idx < existingSteps.length - 1) {
+                                    stepEl.style.borderBottom = '1px solid rgba(255, 255, 255, 0.1)';
+                                }
+                                thinkingContent.appendChild(stepEl);
+                            });
                             
                             // Only show toggle if there are thinking steps
                             if (existingSteps.length > 0) {
-                                // Create toggle button
+                                // Create toggle button with step counter
                                 const thinkingToggle = document.createElement('button');
                                 thinkingToggle.className = 'thinking-toggle';
-                                thinkingToggle.textContent = '💭 Show thinking';
+                                thinkingToggle.style.padding = '8px 12px';
+                                thinkingToggle.style.marginBottom = '8px';
+                                thinkingToggle.style.background = 'transparent';
+                                thinkingToggle.style.border = '1px solid var(--accent)';
+                                thinkingToggle.style.color = 'var(--accent)';
+                                thinkingToggle.style.cursor = 'pointer';
+                                thinkingToggle.style.borderRadius = '4px';
+                                thinkingToggle.style.fontSize = '0.9em';
+                                thinkingToggle.style.fontWeight = 'bold';
+                                thinkingToggle.style.transition = 'all 0.2s ease';
+                                thinkingToggle.textContent = `💭 Show thinking (${existingSteps.length} steps)`;
+                                thinkingToggle.onmouseover = () => {
+                                    thinkingToggle.style.background = 'rgba(0, 255, 65, 0.1)';
+                                };
+                                thinkingToggle.onmouseout = () => {
+                                    thinkingToggle.style.background = 'transparent';
+                                };
                                 thinkingToggle.onclick = () => {
                                     const isExpanded = thinkingToggle.textContent.includes('Show');
                                     thinkingContent.style.display = isExpanded ? 'block' : 'none';
-                                    thinkingToggle.textContent = isExpanded ? '💭 Hide thinking' : '💭 Show thinking';
+                                    thinkingToggle.textContent = isExpanded ? `💭 Hide thinking (${existingSteps.length} steps)` : `💭 Show thinking (${existingSteps.length} steps)`;
+                                    thinkingToggle.style.background = isExpanded ? 'rgba(0, 255, 65, 0.1)' : 'transparent';
                                 };
                                 thinkingDiv.appendChild(thinkingToggle);
                                 thinkingDiv.appendChild(thinkingContent);
