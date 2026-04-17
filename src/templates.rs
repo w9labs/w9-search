@@ -831,20 +831,12 @@ pub async fn index(headers: HeaderMap, State(state): State<AppState>) -> Respons
                             }
 
                             // After done: Show thinking toggle button (collapsible)
+                            // Capture existing thinking steps BEFORE clearing
+                            const existingSteps = Array.from(thinkingDiv.querySelectorAll('.thinking-step'));
+                            
                             thinkingDiv.innerHTML = '';
                             thinkingDiv.style.display = 'block';
                             thinkingDiv.style.marginBottom = '10px';
-                            
-                            // Create toggle button
-                            const thinkingToggle = document.createElement('button');
-                            thinkingToggle.className = 'thinking-toggle';
-                            thinkingToggle.textContent = '💭 Show thinking';
-                            thinkingToggle.onclick = () => {
-                                const isExpanded = thinkingToggle.textContent.includes('Show');
-                                thinkingContent.style.display = isExpanded ? 'block' : 'none';
-                                thinkingToggle.textContent = isExpanded ? '💭 Hide thinking' : '💭 Show thinking';
-                            };
-                            thinkingDiv.appendChild(thinkingToggle);
                             
                             // Create thinking content container (hidden by default)
                             const thinkingContent = document.createElement('div');
@@ -859,10 +851,23 @@ pub async fn index(headers: HeaderMap, State(state): State<AppState>) -> Respons
                             thinkingContent.style.fontFamily = 'monospace';
                             thinkingContent.style.maxHeight = '200px';
                             thinkingContent.style.overflowY = 'auto';
-                            // Move the thinking content to this container
-                            const thinkingSteps = thinkingDiv.querySelectorAll('.thinking-step');
-                            thinkingSteps.forEach(step => thinkingContent.appendChild(step));
-                            thinkingDiv.appendChild(thinkingContent);
+                            // Re-add the thinking steps to the container
+                            existingSteps.forEach(step => thinkingContent.appendChild(step));
+                            
+                            // Only show toggle if there are thinking steps
+                            if (existingSteps.length > 0) {
+                                // Create toggle button
+                                const thinkingToggle = document.createElement('button');
+                                thinkingToggle.className = 'thinking-toggle';
+                                thinkingToggle.textContent = '💭 Show thinking';
+                                thinkingToggle.onclick = () => {
+                                    const isExpanded = thinkingToggle.textContent.includes('Show');
+                                    thinkingContent.style.display = isExpanded ? 'block' : 'none';
+                                    thinkingToggle.textContent = isExpanded ? '💭 Hide thinking' : '💭 Show thinking';
+                                };
+                                thinkingDiv.appendChild(thinkingToggle);
+                                thinkingDiv.appendChild(thinkingContent);
+                            }
                             
                             // Ensure answer is prominent
                             answerTextDiv.style.fontSize = '1.05em';
@@ -898,14 +903,18 @@ pub async fn index(headers: HeaderMap, State(state): State<AppState>) -> Respons
                                         const span = document.createElement('span');
                                         span.className = 'citation';
                                         span.textContent = `[${num}]`;
+                                        span.style.cursor = 'pointer';
+                                        span.style.borderBottom = '1px dotted var(--accent)';
                                         
                                         const tooltip = document.createElement('div');
                                         tooltip.className = 'citation-tooltip';
                                         
-                                        const source = accumulatedSources[parseInt(num) - 1];
-                                        if (source) {
+                                        const sourceIndex = parseInt(num) - 1;
+                                        const source = accumulatedSources[sourceIndex];
+                                        
+                                        if (source && source.url) {
                                             tooltip.innerHTML = `
-                                                <span class="citation-tooltip-title">${source.title}</span>
+                                                <span class="citation-tooltip-title">${source.title || 'Untitled'}</span>
                                                 <span class="citation-tooltip-url">${source.url}</span>
                                                 <a href="${source.url}" target="_blank" class="citation-link">Open →</a>
                                             `;
@@ -913,8 +922,10 @@ pub async fn index(headers: HeaderMap, State(state): State<AppState>) -> Respons
                                                 e.stopPropagation();
                                                 window.open(source.url, '_blank');
                                             };
+                                            span.style.color = 'var(--accent)';
                                         } else {
-                                            tooltip.textContent = `Source ${num}`;
+                                            tooltip.textContent = `Source ${num} not found`;
+                                            span.style.opacity = '0.6';
                                         }
                                         
                                         span.appendChild(tooltip);
