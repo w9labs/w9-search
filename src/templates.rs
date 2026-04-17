@@ -790,13 +790,13 @@ pub async fn index(headers: HeaderMap, State(state): State<AppState>) -> Respons
                                     if (line.startsWith('data: ')) {
                                         try {
                                             const event = JSON.parse(line.substring(6));
-                                            
+
                                             if (event.type === 'Status') {
                                                 if (event.data.startsWith('THREAD_ID:')) {
                                                     const newId = event.data.split(':')[1];
                                                     if (!currentThreadId) {
                                                         currentThreadId = newId;
-                                                        loadThreads(); 
+                                                        loadThreads();
                                                     }
                                                 } else {
                                                     const step = document.createElement('div');
@@ -823,10 +823,13 @@ pub async fn index(headers: HeaderMap, State(state): State<AppState>) -> Respons
                                             } else if (event.type === 'Error') {
                                                 answerTextDiv.innerHTML += `<div class="error">${event.data}</div>`;
                                             }
-                                        } catch (e) { console.warn(e); }
+                                        } catch (e) {
+                                            console.warn(e);
+                                        }
                                     }
                                 }
-                            
+                            }
+
                             // After done: Show thinking toggle button (collapsible)
                             thinkingDiv.innerHTML = '';
                             thinkingDiv.style.display = 'block';
