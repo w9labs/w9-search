@@ -873,6 +873,7 @@ pub async fn index(headers: HeaderMap, State(state): State<AppState>) -> Respons
                             answerTextDiv.innerHTML += `<div class="error">Error: ${e.message}</div>`;
                             thinkingDiv.style.display = 'none';
                         }
+                    }
 
                     // --- Markdown Renderer ---
                     function renderMarkdown(markdown) {
