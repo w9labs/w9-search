@@ -746,12 +746,52 @@ pub async fn index(headers: HeaderMap, State(state): State<AppState>) -> Respons
                             thinkingDiv.className = 'thinking-process';
                             aiContentDiv.appendChild(thinkingDiv);
                         }
-                        thinkingDiv.style.display = 'block';
+                        thinkingDiv.style.display = 'none';
+
+                        // Live status feed so the assistant card never feels empty
+                        const statusDiv = document.createElement('div');
+                        statusDiv.className = 'research-status';
+                        statusDiv.style.display = 'block';
+                        statusDiv.style.padding = '10px 12px';
+                        statusDiv.style.marginBottom = '10px';
+                        statusDiv.style.background = 'rgba(0, 255, 65, 0.06)';
+                        statusDiv.style.borderLeft = '4px solid var(--accent)';
+                        statusDiv.style.borderRadius = '4px';
+                        statusDiv.style.color = '#b8ffcb';
+                        statusDiv.style.fontFamily = 'monospace';
+                        statusDiv.style.fontSize = '0.88em';
+                        statusDiv.style.lineHeight = '1.45';
+                        statusDiv.style.maxHeight = '220px';
+                        statusDiv.style.overflowY = 'auto';
+                        statusDiv.innerHTML = `
+                            <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px; color:var(--accent); font-weight:bold;">
+                                <span class="status-spinner" style="display:inline-block; width:10px; height:10px; border:2px solid rgba(0,255,65,0.35); border-top-color: var(--accent); border-radius:50%; animation: spin 1s linear infinite;"></span>
+                                <span>Research progress</span>
+                            </div>
+                            <div class="status-feed">
+                                <div class="status-step" style="opacity:0.85;">Waiting for search to begin...</div>
+                            </div>
+                        `;
+                        aiContentDiv.insertBefore(statusDiv, thinkingDiv);
 
                         // Actual Answer Container
                         const answerTextDiv = document.createElement('div');
                         answerTextDiv.className = 'answer-text';
                         aiContentDiv.appendChild(answerTextDiv);
+
+                        const statusFeed = statusDiv.querySelector('.status-feed');
+                        const statusSpinner = statusDiv.querySelector('.status-spinner');
+                        const appendStatusLine = (text) => {
+                            if (!statusFeed) return;
+                            const line = document.createElement('div');
+                            line.className = 'status-step';
+                            line.style.marginBottom = '6px';
+                            line.style.whiteSpace = 'pre-wrap';
+                            line.style.wordBreak = 'break-word';
+                            line.textContent = text;
+                            statusFeed.appendChild(line);
+                            statusDiv.scrollTop = statusDiv.scrollHeight;
+                        };
 
                         accumulatedSources = []; 
 
@@ -799,11 +839,13 @@ pub async fn index(headers: HeaderMap, State(state): State<AppState>) -> Respons
                                                         loadThreads();
                                                     }
                                                 } else {
-                                                    // System status only - don't show in thinking
-                                                    console.log('Status:', event.data);
+                                                    appendStatusLine(event.data);
                                                 }
                                             } else if (event.type === 'Thinking') {
                                                 // Model's chain-of-thought reasoning
+                                                if (thinkingDiv.style.display === 'none') {
+                                                    thinkingDiv.style.display = 'block';
+                                                }
                                                 const step = document.createElement('div');
                                                 step.className = 'thinking-step';
                                                 step.style.whiteSpace = 'pre-wrap';
@@ -842,8 +884,14 @@ pub async fn index(headers: HeaderMap, State(state): State<AppState>) -> Respons
                             const existingSteps = Array.from(thinkingDiv.querySelectorAll('.thinking-step'));
                             
                             thinkingDiv.innerHTML = '';
-                            thinkingDiv.style.display = 'block';
+                            thinkingDiv.style.display = existingSteps.length > 0 ? 'block' : 'none';
                             thinkingDiv.style.marginBottom = '10px';
+                            if (statusSpinner) {
+                                statusSpinner.style.animation = 'none';
+                                statusSpinner.style.borderColor = 'rgba(0,255,65,0.15)';
+                                statusSpinner.style.borderTopColor = 'rgba(0,255,65,0.35)';
+                            }
+                            appendStatusLine('Research complete.');
                             
                             // Create thinking content container (hidden by default)
                             const thinkingContent = document.createElement('div');
@@ -912,6 +960,9 @@ pub async fn index(headers: HeaderMap, State(state): State<AppState>) -> Respons
                             answerTextDiv.style.background = 'var(--surface)';
                             answerTextDiv.style.borderRadius = '8px';
                             answerTextDiv.style.border = '1px solid var(--border)';
+                            if (statusDiv && statusDiv.parentNode) {
+                                statusDiv.style.marginBottom = '12px';
+                            }
 
                         } catch (e) {
                             answerTextDiv.innerHTML += `<div class="error">Error: ${e.message}</div>`;
