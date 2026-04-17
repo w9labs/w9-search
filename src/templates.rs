@@ -925,12 +925,14 @@ pub async fn index(headers: HeaderMap, State(state): State<AppState>) -> Respons
                         const tempDiv = document.createElement('div');
                         tempDiv.innerHTML = html;
                         
-                        const citationRegex = /\[(\d+)\]/g;
+                        const citationRegex = /\[(?:Source\s*)?(\d+)\]/gi;
                         
                         function processTextNodes(node) {
                             if (node.nodeType === 3) {
                                 const text = node.nodeValue;
+                                citationRegex.lastIndex = 0;
                                 if (citationRegex.test(text)) {
+                                    citationRegex.lastIndex = 0;
                                     const fragment = document.createDocumentFragment();
                                     let lastIndex = 0;
                                     text.replace(citationRegex, (match, num, offset) => {
@@ -938,7 +940,7 @@ pub async fn index(headers: HeaderMap, State(state): State<AppState>) -> Respons
                                         
                                         const span = document.createElement('span');
                                         span.className = 'citation';
-                                        span.textContent = `[${num}]`;
+                                        span.textContent = match;
                                         span.style.cursor = 'pointer';
                                         span.style.borderBottom = '1px dotted var(--accent)';
                                         

@@ -72,6 +72,82 @@ impl RAGSystem {
         }
     }
 
+    fn extract_completion_sections(text: &str) -> (Vec<String>, String, bool) {
+        let thinking_re = regex::Regex::new(r"(?s)<thinking>(.*?)</thinking>").unwrap();
+        let final_re = regex::Regex::new(r"(?s)<final>(.*?)</final>").unwrap();
+
+        let thinking = thinking_re
+            .captures_iter(text)
+            .filter_map(|cap| cap.get(1).map(|m| m.as_str().trim().to_string()))
+            .filter(|block| !block.is_empty())
+            .collect::<Vec<_>>();
+
+        let has_final = final_re.is_match(text);
+        let answer = if has_final {
+            final_re
+                .captures(text)
+                .and_then(|cap| cap.get(1))
+                .map(|m| m.as_str().trim().to_string())
+                .unwrap_or_default()
+        } else {
+            thinking_re.replace_all(text, "").trim().to_string()
+        };
+
+        (thinking, answer, has_final)
+    }
+
+    fn looks_like_reasoning(text: &str) -> bool {
+        let lowered = text.trim().to_lowercase();
+        if lowered.is_empty() {
+            return false;
+        }
+
+        [
+            "the user is asking",
+            "to provide this information",
+            "i need to",
+            "i will",
+            "after obtaining",
+            "let me",
+            "first,",
+            "planning research strategy",
+            "synthesizing answer",
+        ]
+        .iter()
+        .any(|needle| lowered.starts_with(needle) || lowered.contains(needle))
+    }
+
+    async fn handle_completion_text(
+        &self,
+        sender: &Option<Sender<Result<StreamEvent, anyhow::Error>>>,
+        text: &str,
+        allow_answer: bool,
+    ) -> Option<String> {
+        let (thinking_blocks, answer_candidate, has_final_tag) =
+            Self::extract_completion_sections(text);
+
+        for block in thinking_blocks {
+            self.send_thinking(sender, block).await;
+        }
+
+        if has_final_tag {
+            return (!answer_candidate.is_empty()).then_some(answer_candidate);
+        }
+
+        if Self::looks_like_reasoning(&answer_candidate) {
+            if !answer_candidate.is_empty() {
+                self.send_thinking(sender, answer_candidate.clone()).await;
+            }
+            return None;
+        }
+
+        if allow_answer && !answer_candidate.is_empty() {
+            return Some(answer_candidate);
+        }
+
+        None
+    }
+
     /// Classify query type for intelligent routing (I-RAG)
     fn classify_query(query: &str) -> QueryType {
         let q = query.to_lowercase();
@@ -531,9 +607,11 @@ impl RAGSystem {
                 4. For 'current' leaders (as of {}): US President Donald Trump (since Jan 2025), Canada PM Mark Carney (since March 2025), Vietnam President Tô Lâm (since April 2026).\n\
                 5. For factual questions, cite sources and give direct answer\n\
                 \n\
-                OUTPUT:\n\
-                - Put your internal reasoning in <thinking> tags (will be shown to user)\n\
-                - Give the final answer clearly AFTER the thinking\n\
+                OUTPUT FORMAT:\n\
+                - Put your internal reasoning in <thinking> tags\n\
+                - Put the final answer in <final> tags\n\
+                - Keep the final answer concise and direct\n\
+                - Do not repeat the reasoning in the final answer\n\
                 - Cite sources with [Source N]\n\
                 \n\
                 SOURCES:\n{}",
@@ -558,6 +636,8 @@ impl RAGSystem {
                     \n\
                     Use the provided sources as primary reference. Use your built-in search for anything missing.\n\
                     If you cite provided sources, use [Source N].\n\
+                    If you use reasoning, put it in <thinking> tags and the final answer in <final> tags.\n\
+                    Keep the final answer concise and direct.\n\
                     For 'current' leaders: US President Donald Trump (Jan 2025), Canada PM Mark Carney (March 2025).\n\
                     \n\
                     SOURCES:\n{}",
@@ -576,6 +656,7 @@ impl RAGSystem {
                 1. Prioritize the provided sources\n\
                 2. If sources are insufficient, you may use your training knowledge but must clarify\n\
                 3. Cite sources using [Source N]\n\
+                4. If reasoning is needed, put it in <thinking> tags and the final answer in <final> tags\n\
                 \n\
                 SOURCES:\n{}",
                 current_date,
@@ -658,15 +739,17 @@ impl RAGSystem {
             
             let first_choice = &choices[0];
             
-            // Try multiple paths to get the message content
+            // Try multiple paths to get the assistant's final answer while keeping reasoning separate.
             let mut extracted_answer: Option<String> = None;
-            
+
             // Path 1: choices[0].message.content (standard non-streaming)
             if let Some(msg) = first_choice.get("message") {
                 if let Some(content) = msg.get("content").and_then(|c| c.as_str()) {
                     if !content.is_empty() {
                         tracing::info!("Found content in message.content ({} chars)", content.len());
-                        extracted_answer = Some(content.to_string());
+                        if let Some(answer) = self.handle_completion_text(&status_sender, content, true).await {
+                            extracted_answer = Some(answer);
+                        }
                     }
                 }
                 // Also check message.text
@@ -674,42 +757,50 @@ impl RAGSystem {
                     if let Some(text) = msg.get("text").and_then(|t| t.as_str()) {
                         if !text.is_empty() {
                             tracing::info!("Found content in message.text ({} chars)", text.len());
-                            extracted_answer = Some(text.to_string());
+                            if let Some(answer) = self.handle_completion_text(&status_sender, text, true).await {
+                                extracted_answer = Some(answer);
+                            }
                         }
                     }
                 }
-                // Check reasoning_content field
+                // Check reasoning_content field (thinking only unless it contains a <final> block)
                 if extracted_answer.is_none() {
                     if let Some(reasoning) = msg.get("reasoning_content").and_then(|r| r.as_str()) {
                         if !reasoning.is_empty() {
-                            tracing::info!("Using reasoning_content as answer ({} chars)", reasoning.len());
-                            extracted_answer = Some(reasoning.to_string());
+                            tracing::info!("Captured reasoning_content ({} chars)", reasoning.len());
+                            if let Some(answer) = self.handle_completion_text(&status_sender, reasoning, false).await {
+                                extracted_answer = Some(answer);
+                            }
                         }
                     }
                 }
-                // Check reasoning field
+                // Check reasoning field (thinking only unless it contains a <final> block)
                 if extracted_answer.is_none() {
                     if let Some(reasoning) = msg.get("reasoning").and_then(|r| r.as_str()) {
                         if !reasoning.is_empty() {
-                            tracing::info!("Using reasoning field as answer ({} chars)", reasoning.len());
-                            extracted_answer = Some(reasoning.to_string());
+                            tracing::info!("Captured reasoning field ({} chars)", reasoning.len());
+                            if let Some(answer) = self.handle_completion_text(&status_sender, reasoning, false).await {
+                                extracted_answer = Some(answer);
+                            }
                         }
                     }
                 }
             }
-            
+
             // Path 2: choices[0].delta.content (streaming-style response)
             if extracted_answer.is_none() {
                 if let Some(delta) = first_choice.get("delta") {
                     if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
                         if !content.is_empty() {
                             tracing::info!("Found content in delta.content ({} chars)", content.len());
-                            extracted_answer = Some(content.to_string());
+                            if let Some(answer) = self.handle_completion_text(&status_sender, content, true).await {
+                                extracted_answer = Some(answer);
+                            }
                         }
                     }
                 }
             }
-            
+
             // Path 3: Check if content is an object with "text" field
             if extracted_answer.is_none() {
                 if let Some(msg) = first_choice.get("message") {
@@ -717,7 +808,9 @@ impl RAGSystem {
                         if let Some(text) = content_obj.get("text").and_then(|t| t.as_str()) {
                             if !text.is_empty() {
                                 tracing::info!("Found content in content.text ({} chars)", text.len());
-                                extracted_answer = Some(text.to_string());
+                                if let Some(answer) = self.handle_completion_text(&status_sender, text, true).await {
+                                    extracted_answer = Some(answer);
+                                }
                             }
                         }
                     }
@@ -753,28 +846,12 @@ impl RAGSystem {
             max_iterations -= 1;
         }
 
-        // Extract final answer: content after </thinking> tags is the real answer
+        // Normalize any leftover structured tags before returning.
         if !final_answer.is_empty() {
-            // First, extract and send thinking content if it exists
-            if let Some(thinking_start) = final_answer.find("<thinking>") {
-                if let Some(thinking_end) = final_answer.find("</thinking>") {
-                    if thinking_start < thinking_end {
-                        let thinking_content = &final_answer[thinking_start + 10..thinking_end];
-                        if !thinking_content.is_empty() {
-                            // Split thinking by sentences or paragraphs and send as separate steps
-                            for line in thinking_content.lines() {
-                                let trimmed = line.trim();
-                                if !trimmed.is_empty() {
-                                    self.send_thinking(&status_sender, trimmed.to_string()).await;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            
-            // Now extract the answer part
-            if let Some(after_thinking) = final_answer.split("</thinking>").nth(1) {
+            let (_, answer_part, has_final_tag) = Self::extract_completion_sections(&final_answer);
+            if has_final_tag && !answer_part.is_empty() {
+                final_answer = answer_part;
+            } else if let Some(after_thinking) = final_answer.split("</thinking>").nth(1) {
                 let answer_part = after_thinking.trim();
                 if !answer_part.is_empty() && answer_part.len() > 10 {
                     final_answer = answer_part.to_string();
